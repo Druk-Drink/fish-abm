@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boids 3D シミュレーション</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  #panel {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(15, 22, 45, 0.88); color: #dbe4ff;
+    border: 1px solid rgba(120, 150, 255, 0.25); border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; width: 250px;
+    backdrop-filter: blur(6px); user-select: none; z-index: 10;
+  }
+  #panel h1 { font-size: 15px; margin-bottom: 10px; color: #9db4ff; }
+  .rule { margin-bottom: 10px; }
+  .rule-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .rule-head input[type=checkbox] { accent-color: #6c8cff; }
+  .rule-head label { cursor: pointer; }
+  input[type=range] { width: 100%; accent-color: #6c8cff; }
+  .row { display: flex; justify-content: space-between; margin: 8px 0 2px; }
+  .val { color: #8fa3d9; font-variant-numeric: tabular-nums; }
+  button {
+    width: 100%; margin-top: 8px; padding: 6px; border-radius: 6px;
+    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
+    color: #dbe4ff; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: rgba(90, 115, 210, 0.45); }
+  select {
+    width: 100%; margin-top: 2px; padding: 4px; border-radius: 6px;
+    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
+    color: #dbe4ff; font-size: 13px;
+  }
+  #hint { margin-top: 10px; font-size: 11px; color: #7284b3; line-height: 1.5; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="panel">
+  <h1>Boids 3D</h1>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="alignOn" checked>
+      <label for="alignOn">群れと同じ方向に泳ごう</label>
+    </div>
+    <input type="range" id="alignW" min="0" max="3" step="0.1" value="1.0">
+  </div>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="cohesionOn" checked>
+      <label for="cohesionOn">群れの中心に集まろう</label>
+    </div>
+    <input type="range" id="cohesionW" min="0" max="3" step="0.1" value="0.8">
+  </div>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="separationOn" checked>
+      <label for="separationOn">他の魚と衝突しないように</label>
+    </div>
+    <input type="range" id="separationW" min="0" max="3" step="0.1" value="1.5">
+  </div>
+
+  <div class="row" style="margin-top: 12px;"><span>近傍の定義（整列・結合）</span></div>
+  <div class="rule-head">
+    <input type="radio" name="mode" id="modeMetric" checked>
+    <label for="modeMetric">距離で見る（半径R以内の全員）</label>
+  </div>
+  <div class="rule-head">
+    <input type="radio" name="mode" id="modeTopo">
+    <label for="modeTopo">数で見る（近い順にk匹）</label>
+  </div>
+  <div class="row"><span>k（見る数）</span><span class="val" id="kVal">7</span></div>
+  <input type="range" id="kNeighbors" min="1" max="15" step="1" value="7">
+
+  <div class="row"><span>個体数</span><span class="val" id="countVal">100</span></div>
+  <input type="range" id="count" min="10" max="500" step="10" value="100">
+
+  <div class="row"><span>視界半径</span><span class="val" id="perceptionVal">14</span></div>
+  <input type="range" id="perception" min="5" max="30" step="1" value="14">
+
+  <div class="row"><span>最高速度</span><span class="val" id="speedVal">0.2</span></div>
+  <input type="range" id="speed" min="0.2" max="4" step="0.1" value="0.2">
+
+  <div class="row"><span>整列度 φ</span><span class="val" id="phiVal">–</span></div>
+
+  <div class="row" style="margin-top: 12px;"><span>魚の種類</span></div>
+  <select id="fishType">
+    <option value="default" selected>標準</option>
+    <option value="aji">アジ風（銀色）</option>
+    <option value="kumanomi">クマノミ風（オレンジ）</option>
+  </select>
+
+  <div class="row" style="margin-top: 12px;"><span>水流</span></div>
+  <select id="flowType">
+    <option value="none" selected>なし</option>
+    <option value="current">海流（一定方向）</option>
+    <option value="vortex">渦（中心軸まわり）</option>
+    <option value="turbulence">乱流（ゆらぎ）</option>
+  </select>
+  <div class="row"><span>流速</span><span class="val" id="flowVal">0.1</span></div>
+  <input type="range" id="flowStrength" min="0" max="0.5" step="0.02" value="0.1">
+
+  <button id="attackSimple">捕食者アタック（シンプル版）</button>
+  <button id="attackAbm">捕食者アタック（ABM版）</button>
+  <button id="addObstacle">障害物を追加</button>
+  <button id="clearObstacles">障害物をクリア</button>
+  <div id="hint">ドラッグ：視点回転<br>ホイール：ズーム<br>右ドラッグ：平行移動<br>分離（衝突回避）は常に半径Rベース</div>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+
+// ---- シーン ----
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+scene.fog = new THREE.Fog(0x0b1020, 200, 450);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
+camera.position.set(90, 60, 110);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0x8899cc, 0.7));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(60, 100, 40);
+scene.add(dirLight);
+
+// 遊泳領域（水槽風の箱）：明るい縁ライン＋内壁の薄い膜＋底面グリッド
+const BOUNDS = new THREE.Vector3(70, 45, 70); // 半サイズ
+const FLOOR_Y = -BOUNDS.y + 3; // 海底の高さ。魚もサメもこれより下には行けない
+const boundsGeo = new THREE.BoxGeometry(BOUNDS.x * 2, BOUNDS.y * 2, BOUNDS.z * 2);
+
+const boundsBox = new THREE.LineSegments(
+  new THREE.EdgesGeometry(boundsGeo),
+  new THREE.LineBasicMaterial({ color: 0xeafcff, transparent: true, opacity: 0.6 })
+);
+scene.add(boundsBox);
+
+// 内壁：BackSide 描画なので視界を遮らず、奥の壁だけがうっすら見える
+const walls = new THREE.Mesh(
+  boundsGeo,
+  new THREE.MeshBasicMaterial({
+    color: 0xbdf3ff, transparent: true, opacity: 0.07,
+    side: THREE.BackSide, depthWrite: false,
+  })
+);
+scene.add(walls);
+
+// ---- 砂地の海底 ----
+const sand = new THREE.Mesh(
+  new THREE.CircleGeometry(BOUNDS.x * 2.4, 48),
+  new THREE.MeshStandardMaterial({ color: 0xe9dba6, roughness: 1.0 })
+);
+sand.rotation.x = -Math.PI / 2;
+sand.position.y = -BOUNDS.y - 0.5;
+scene.add(sand);
+
+window.addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---- パラメータ（UIと連動） ----
+const params = {
+  alignOn: true,  alignW: 1.0,
+  cohesionOn: true, cohesionW: 0.8,
+  separationOn: true, separationW: 1.5,
+  count: 100,
+  perception: 14,
+  maxSpeed: 0.2,
+  maxForce: 0.02,
+  obstacleAvoidW: 3.0,
+  boundsW: 2.5,
+};
+
+function bind(id, key, isCheck, display) {
+  const el = document.getElementById(id);
+  el.addEventListener("input", () => {
+    params[key] = isCheck ? el.checked : parseFloat(el.value);
+    if (display) document.getElementById(display).textContent = el.value;
+    if (key === "count") syncCount();
+  });
+}
+bind("alignOn", "alignOn", true);
+bind("alignW", "alignW", false);
+bind("cohesionOn", "cohesionOn", true);
+bind("cohesionW", "cohesionW", false);
+bind("separationOn", "separationOn", true);
+bind("separationW", "separationW", false);
+bind("count", "count", false, "countVal");
+bind("perception", "perception", false, "perceptionVal");
+bind("speed", "maxSpeed", false, "speedVal");
+
+// 近傍の定義モード（Ballerini et al. 2008: 実際のムクドリは k≈6〜7 のトポロジカル型）
+params.topological = false;
+params.k = 7;
+document.getElementById("modeMetric").addEventListener("change", () => params.topological = false);
+document.getElementById("modeTopo").addEventListener("change", () => params.topological = true);
+bind("kNeighbors", "k", false, "kVal");
+
+// 水流（フローフィールド）：物理計算ではなく「位置→流速」を返すあらかじめ決めた場。
+// 毎フレーム位置に加算する（移流）ので、魚もサメも同じ水に流される
+params.flowType = "none";
+params.flowStrength = 0.1;
+document.getElementById("flowType").addEventListener("change", e => params.flowType = e.target.value);
+bind("flowStrength", "flowStrength", false, "flowVal");
+
+let flowTime = 0;
+const _flow = new THREE.Vector3();
+function flowAt(pos, out) {
+  const s = params.flowStrength;
+  out.set(0, 0, 0);
+  if (s === 0 || params.flowType === "none") return out;
+  if (params.flowType === "current") {
+    out.set(1, 0, 0.25).normalize().multiplyScalar(s);
+  } else if (params.flowType === "vortex") {
+    // Y軸まわりの剛体回転（外側ほど速く、壁際で最大流速 s）
+    out.set(-pos.z, 0, pos.x).multiplyScalar(s / BOUNDS.x);
+  } else if (params.flowType === "turbulence") {
+    // 時間変化する正弦波の重ね合わせによる擬似乱流
+    const t = flowTime;
+    out.set(
+      Math.sin(0.06 * pos.y + t * 0.7) * Math.cos(0.05 * pos.z + t * 0.4),
+      Math.sin(0.06 * pos.z + t * 0.5) * Math.cos(0.05 * pos.x + t * 0.6),
+      Math.sin(0.06 * pos.x + t * 0.6) * Math.cos(0.05 * pos.y + t * 0.5)
+    ).multiplyScalar(s);
+  }
+  return out;
+}
+
+// ---- 障害物 ----
+const obstacles = [];
+const obstacleMat = new THREE.MeshStandardMaterial({
+  color: 0xff6e6e, transparent: true, opacity: 0.35, roughness: 0.6
+});
+document.getElementById("addObstacle").addEventListener("click", () => {
+  const r = 6 + Math.random() * 6;
+  const pos = new THREE.Vector3(
+    (Math.random() * 2 - 1) * BOUNDS.x * 0.6,
+    (Math.random() * 2 - 1) * BOUNDS.y * 0.6,
+    (Math.random() * 2 - 1) * BOUNDS.z * 0.6
+  );
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 16), obstacleMat);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  obstacles.push({ pos, r, mesh });
+});
+document.getElementById("clearObstacles").addEventListener("click", () => {
+  for (const o of obstacles) scene.remove(o.mesh);
+  obstacles.length = 0;
+});
+
+// ---- Boid（InstancedMesh で描画） ----
+const MAX_BOIDS = 1000;
+
+// 魚の種類ごとの形状パラメータ（body: 胴体の[幅,高さ,長さ]スケール）
+const FISH_TYPES = {
+  default:  { color: 0x8fd3ff, body: [0.38, 0.62, 1.35], tailR: 0.85, tailH: 1.1, tailZ: -1.75, finH: 0.6 },
+  aji:      { color: 0xc9d9e4, body: [0.30, 0.55, 1.55], tailR: 1.0,  tailH: 1.2, tailZ: -2.0,  finH: 0.5 },
+  kumanomi: { color: 0xff8c2e, body: [0.50, 0.72, 1.05], tailR: 0.7,  tailH: 0.9, tailZ: -1.4,  finH: 0.55 },
+};
+
+// 魚の形状（+Z が進行方向）：胴体・尾びれ・背びれを結合
+function buildFishGeometry(t = FISH_TYPES.default) {
+  // 胴体：球を細長く引き伸ばして側面をやや平らに
+  const body = new THREE.SphereGeometry(1, 12, 10);
+  body.scale(...t.body);
+
+  // 尾びれ：薄く平たいコーン。先端（付け根）を前方に向けて胴体後端へ
+  const tail = new THREE.ConeGeometry(t.tailR, t.tailH, 4);
+  tail.rotateX(Math.PI / 2);       // 先端を +Z へ
+  tail.rotateZ(Math.PI / 2);       // ひし形を縦向きに
+  tail.scale(0.12, 1.1, 1);        // 左右に薄く
+  tail.translate(0, 0, t.tailZ);
+
+  // 背びれ：小さな薄い三角
+  const fin = new THREE.ConeGeometry(0.45, t.finH, 4);
+  fin.scale(0.12, 1, 1);
+  fin.translate(0, t.body[1] + 0.13, -0.15);
+
+  return mergeGeometries([body, tail, fin]);
+}
+
+const boidGeo = buildFishGeometry();
+const boidMat = new THREE.MeshStandardMaterial({ color: 0x8fd3ff, roughness: 0.4 });
+const boidMesh = new THREE.InstancedMesh(boidGeo, boidMat, MAX_BOIDS);
+boidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(boidMesh);
+
+// 魚の種類切替：ジオメトリを差し替え、色を変更（InstancedMeshはそのまま）
+document.getElementById("fishType").addEventListener("change", e => {
+  const t = FISH_TYPES[e.target.value];
+  const old = boidMesh.geometry;
+  boidMesh.geometry = buildFishGeometry(t);
+  old.dispose();
+  boidMat.color.set(t.color);
+});
+
+// ---- 捕食者 ----
+// シンプル版: 群れの重心へ直線等速で突進するだけの「動く環境」（エージェントではない）
+// ABM版: 最近傍の魚を知覚して追跡する操舵エージェント。スタミナが尽きると直進離脱。
+//        捕獲判定はなし（擾乱実験用）
+let predator = null;
+
+// サメの形状（+Z が進行方向）：魚雷型の胴体＋大きな背びれ＋縦長の尾びれ＋左右の胸びれ
+function buildSharkGeometry() {
+  const body = new THREE.SphereGeometry(1, 14, 10);
+  body.scale(0.5, 0.7, 2.1);
+
+  // 背びれ：サメらしさの要。大きめの薄い三角
+  const dorsal = new THREE.ConeGeometry(0.55, 1.1, 4);
+  dorsal.scale(0.14, 1, 1);
+  dorsal.translate(0, 1.0, 0.1);
+
+  // 尾びれ：縦に大きく
+  const tail = new THREE.ConeGeometry(1.0, 1.4, 4);
+  tail.rotateX(Math.PI / 2);
+  tail.rotateZ(Math.PI / 2);
+  tail.scale(0.14, 1.3, 1);
+  tail.translate(0, 0.15, -2.6);
+
+  // 胸びれ×2：斜め下外向きに張り出す
+  const finL = new THREE.ConeGeometry(0.4, 1.0, 4);
+  finL.scale(0.14, 1, 1);
+  finL.rotateZ(-Math.PI * 2 / 3);
+  finL.translate(0.55, -0.2, 0.6);
+  const finR = new THREE.ConeGeometry(0.4, 1.0, 4);
+  finR.scale(0.14, 1, 1);
+  finR.rotateZ(Math.PI * 2 / 3);
+  finR.translate(-0.55, -0.2, 0.6);
+
+  return mergeGeometries([body, dorsal, tail, finL, finR]);
+}
+
+const predMat = new THREE.MeshStandardMaterial({ color: 0xff5c5c, roughness: 0.4 });
+const predatorMesh = new THREE.Mesh(buildSharkGeometry(), predMat);
+predatorMesh.scale.setScalar(2.2);
+predatorMesh.visible = false;
+scene.add(predatorMesh);
+
+function spawnPredator(mode) {
+  const c = new THREE.Vector3();
+  for (const b of boids) c.add(b.pos);
+  c.divideScalar(boids.length);
+  // 出現は横〜上方のみ（海底の下から湧かない）
+  const dir = new THREE.Vector3().randomDirection();
+  dir.y = Math.abs(dir.y) * 0.6;
+  const pos = dir.normalize().multiplyScalar(BOUNDS.length() + 40);
+  const speed = mode === "simple" ? Math.max(1.0, params.maxSpeed * 3) : params.maxSpeed * 1.5;
+  const vel = c.sub(pos).normalize().multiplyScalar(speed);
+  predator = { mode, pos, vel, stamina: 600 }; // スタミナ約10秒（ABM版のみ消費）
+  predMat.color.set(mode === "abm" ? 0xff9c3c : 0xff5c5c);
+  predatorMesh.visible = true;
+}
+document.getElementById("attackSimple").addEventListener("click", () => spawnPredator("simple"));
+document.getElementById("attackAbm").addEventListener("click", () => spawnPredator("abm"));
+
+const _pSteer = new THREE.Vector3();
+function updatePredator() {
+  if (!predator) return;
+  const p = predator;
+  if (p.mode === "abm" && p.stamina > 0 && boids.length > 0) {
+    // 知覚: 最近傍の魚を狙い直す
+    let target = null, bd = Infinity;
+    for (const b of boids) {
+      const d2 = b.pos.distanceToSquared(p.pos);
+      if (d2 < bd) { bd = d2; target = b; }
+    }
+    // 操舵: 魚より少し速いが、旋回はやや鈍め（獲物側に回避の余地を残す）
+    const pSpeed = params.maxSpeed * 1.5;
+    const pForce = 0.02;
+    _pSteer.subVectors(target.pos, p.pos).setLength(pSpeed).sub(p.vel).clampLength(0, pForce);
+    p.vel.add(_pSteer);
+    if (p.vel.length() > pSpeed) p.vel.setLength(pSpeed);
+    p.stamina--;
+  }
+  p.pos.add(p.vel);
+  p.pos.add(flowAt(p.pos, _flow)); // サメも同じ水に流される
+  // 海底より下には行かせない（砂の下からの出入りを禁止）
+  if (p.pos.y < FLOOR_Y) {
+    p.pos.y = FLOOR_Y;
+    if (p.vel.y < 0) p.vel.y = 0;
+  }
+  const out =
+    Math.abs(p.pos.x) > BOUNDS.x + 60 ||
+    Math.abs(p.pos.y) > BOUNDS.y + 60 ||
+    Math.abs(p.pos.z) > BOUNDS.z + 60;
+  if (out && (p.mode === "simple" || p.stamina <= 0)) {
+    predator = null;
+    predatorMesh.visible = false;
+  }
+}
+
+class Boid {
+  constructor() {
+    this.pos = new THREE.Vector3(
+      (Math.random() * 2 - 1) * BOUNDS.x * 0.8,
+      (Math.random() * 2 - 1) * BOUNDS.y * 0.8,
+      (Math.random() * 2 - 1) * BOUNDS.z * 0.8
+    );
+    this.vel = new THREE.Vector3().randomDirection().multiplyScalar(params.maxSpeed * 0.7);
+    this.acc = new THREE.Vector3();
+  }
+}
+
+const boids = [];
+function syncCount() {
+  while (boids.length < params.count) boids.push(new Boid());
+  boids.length = params.count;
+  boidMesh.count = params.count;
+}
+syncCount();
+
+// ---- 空間グリッド ----
+function buildGrid(cellSize) {
+  const grid = new Map();
+  for (const b of boids) {
+    const key =
+      Math.floor(b.pos.x / cellSize) + "," +
+      Math.floor(b.pos.y / cellSize) + "," +
+      Math.floor(b.pos.z / cellSize);
+    let cell = grid.get(key);
+    if (!cell) grid.set(key, cell = []);
+    cell.push(b);
+  }
+  return grid;
+}
+
+function forEachNeighbor(grid, cellSize, b, fn) {
+  const cx = Math.floor(b.pos.x / cellSize);
+  const cy = Math.floor(b.pos.y / cellSize);
+  const cz = Math.floor(b.pos.z / cellSize);
+  for (let gx = cx - 1; gx <= cx + 1; gx++)
+    for (let gy = cy - 1; gy <= cy + 1; gy++)
+      for (let gz = cz - 1; gz <= cz + 1; gz++) {
+        const cell = grid.get(gx + "," + gy + "," + gz);
+        if (!cell) continue;
+        for (const other of cell) if (other !== b) fn(other);
+      }
+}
+
+const _steer = new THREE.Vector3();
+function steer(b, desired, weight) {
+  if (desired.lengthSq() === 0) return;
+  _steer.copy(desired).setLength(params.maxSpeed).sub(b.vel);
+  _steer.clampLength(0, params.maxForce).multiplyScalar(weight);
+  b.acc.add(_steer);
+}
+
+const _align = new THREE.Vector3();
+const _coh = new THREE.Vector3();
+const _sep = new THREE.Vector3();
+const _diff = new THREE.Vector3();
+
+// kNN 用の再利用バッファ（上位 k 個の挿入選択）
+const knnD = new Float64Array(16);
+const knnB = new Array(16);
+
+function update() {
+  const R = params.perception;
+  const topo = params.topological;
+  const grid = buildGrid(R);
+
+  flowTime += 0.016;
+  updatePredator();
+
+  for (const b of boids) {
+    b.acc.set(0, 0, 0);
+    _align.set(0, 0, 0);
+    _coh.set(0, 0, 0);
+    _sep.set(0, 0, 0);
+    let n = 0, nSep = 0;
+    const sepDist = R * 0.45;
+
+    forEachNeighbor(grid, R, b, other => {
+      _diff.subVectors(other.pos, b.pos);
+      const d2 = _diff.lengthSq();
+      if (d2 > R * R) return;
+      if (!topo) {
+        n++;
+        _align.add(other.vel);
+        _coh.add(other.pos);
+      }
+      if (d2 < sepDist * sepDist && d2 > 0) {
+        // 近いほど強く反発（距離の2乗で減衰）
+        _sep.addScaledVector(_diff, -1 / d2);
+        nSep++;
+      }
+    });
+
+    // トポロジカル近傍：距離に関係なく近い順 k 個体を整列・結合の相手にする
+    // （分離は上の短距離メトリックのまま。Ballerini et al. の SPP 実験と同じ構成）
+    if (topo && boids.length > 1) {
+      const k = Math.min(params.k, boids.length - 1);
+      for (let j = 0; j < k; j++) { knnD[j] = Infinity; knnB[j] = null; }
+      for (const other of boids) {
+        if (other === b) continue;
+        const d2 = other.pos.distanceToSquared(b.pos);
+        if (d2 >= knnD[k - 1]) continue;
+        let j = k - 1;
+        while (j > 0 && knnD[j - 1] > d2) {
+          knnD[j] = knnD[j - 1];
+          knnB[j] = knnB[j - 1];
+          j--;
+        }
+        knnD[j] = d2;
+        knnB[j] = other;
+      }
+      for (let j = 0; j < k; j++) {
+        const other = knnB[j];
+        if (!other) break;
+        n++;
+        _align.add(other.vel);
+        _coh.add(other.pos);
+      }
+    }
+
+    if (n > 0) {
+      if (params.alignOn) steer(b, _align.divideScalar(n), params.alignW);
+      if (params.cohesionOn) steer(b, _coh.divideScalar(n).sub(b.pos), params.cohesionW);
+    }
+    if (nSep > 0 && params.separationOn) steer(b, _sep, params.separationW);
+
+    // 捕食者からの逃避
+    if (predator) {
+      _diff.subVectors(b.pos, predator.pos);
+      const d = _diff.length();
+      const zone = 25;
+      if (d < zone && d > 0) steer(b, _diff, 6 * (zone - d) / zone);
+    }
+
+    // 障害物回避
+    for (const o of obstacles) {
+      _diff.subVectors(b.pos, o.pos);
+      const d = _diff.length();
+      const zone = o.r + 12;
+      if (d < zone && d > 0) {
+        const strength = (zone - d) / zone;
+        steer(b, _diff, params.obstacleAvoidW * strength);
+      }
+    }
+
+    // 境界：外に出そうになったら内側へ操舵（ソフトな壁）
+    // マージンは制動距離 v²/2a（a = 境界操舵の最大加速度）ぶん広げ、
+    // 高速時でも壁の手前で曲がり始められるようにする
+    const brake = (params.maxSpeed * params.maxSpeed) / (2 * params.maxForce * params.boundsW);
+    const margin = Math.min(8 + brake, 30);
+    _diff.set(0, 0, 0);
+    if (b.pos.x > BOUNDS.x - margin) _diff.x = -1;
+    else if (b.pos.x < -BOUNDS.x + margin) _diff.x = 1;
+    if (b.pos.y > BOUNDS.y - margin) _diff.y = -1;
+    else if (b.pos.y < -BOUNDS.y + margin) _diff.y = 1;
+    if (b.pos.z > BOUNDS.z - margin) _diff.z = -1;
+    else if (b.pos.z < -BOUNDS.z + margin) _diff.z = 1;
+    if (_diff.lengthSq() > 0) steer(b, _diff, params.boundsW);
+
+    b.vel.add(b.acc);
+    const spd = b.vel.length();
+    if (spd > params.maxSpeed) b.vel.setLength(params.maxSpeed);
+    else if (spd < params.maxSpeed * 0.3) b.vel.setLength(params.maxSpeed * 0.3);
+    b.pos.add(b.vel);
+    b.pos.add(flowAt(b.pos, _flow)); // 水流による移流
+
+    // 海底より下には行かせない（魚も砂に潜れない）
+    if (b.pos.y < FLOOR_Y) {
+      b.pos.y = FLOOR_Y;
+      if (b.vel.y < 0) b.vel.y = 0;
+    }
+
+    // 保険のハードクランプ：操舵で防ぎきれず大きくはみ出した場合のみ、
+    // 位置を引き戻して外向きの速度成分を消す
+    const slack = 5;
+    for (const axis of ["x", "y", "z"]) {
+      const limit = BOUNDS[axis] + slack;
+      if (b.pos[axis] > limit) {
+        b.pos[axis] = limit;
+        if (b.vel[axis] > 0) b.vel[axis] = 0;
+      } else if (b.pos[axis] < -limit) {
+        b.pos[axis] = -limit;
+        if (b.vel[axis] < 0) b.vel[axis] = 0;
+      }
+    }
+  }
+
+  // 整列度 φ = |Σ v̂| / N（1: 全員同方向、0: バラバラ）
+  if (++phiFrame % 10 === 0) {
+    let ux = 0, uy = 0, uz = 0;
+    for (const b of boids) {
+      const s = b.vel.length() || 1;
+      ux += b.vel.x / s;
+      uy += b.vel.y / s;
+      uz += b.vel.z / s;
+    }
+    phiEl.textContent = (Math.sqrt(ux * ux + uy * uy + uz * uz) / boids.length).toFixed(2);
+  }
+}
+let phiFrame = 0;
+const phiEl = document.getElementById("phiVal");
+
+const _mat = new THREE.Matrix4();
+const _quat = new THREE.Quaternion();
+const _up = new THREE.Vector3(0, 1, 0);
+const _lookTarget = new THREE.Vector3();
+const _lookMat = new THREE.Matrix4();
+const _scale = new THREE.Vector3(1, 1, 1);
+
+function draw() {
+  for (let i = 0; i < boids.length; i++) {
+    const b = boids[i];
+    _lookTarget.copy(b.pos).add(b.vel);
+    // Matrix4.lookAt は「eye から target を見る」カメラ基底（+Z が target→eye 向き）を
+    // 作るため、eye と target を逆に渡して +Z（魚の頭）を進行方向に向ける
+    _lookMat.lookAt(_lookTarget, b.pos, _up);
+    _quat.setFromRotationMatrix(_lookMat);
+    _mat.compose(b.pos, _quat, _scale);
+    boidMesh.setMatrixAt(i, _mat);
+  }
+  boidMesh.instanceMatrix.needsUpdate = true;
+
+  if (predator) {
+    predatorMesh.position.copy(predator.pos);
+    _lookTarget.copy(predator.pos).add(predator.vel);
+    _lookMat.lookAt(_lookTarget, predator.pos, _up);
+    predatorMesh.quaternion.setFromRotationMatrix(_lookMat);
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

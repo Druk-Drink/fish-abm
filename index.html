@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>魚群ABMデモ集 — Boids / 三宮モデル / 流体相互作用</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh; background: #0b1020; color: #dbe4ff;
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 48px 20px;
+  }
+  h1 { font-size: 26px; color: #9db4ff; margin-bottom: 8px; }
+  #lead { color: #8fa3d9; font-size: 14px; margin-bottom: 36px; text-align: center; line-height: 1.8; }
+  #grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px; width: 100%; max-width: 960px;
+  }
+  a.card {
+    display: block; text-decoration: none; color: inherit;
+    background: rgba(15, 22, 45, 0.9); border: 1px solid rgba(120, 150, 255, 0.25);
+    border-radius: 12px; padding: 20px;
+    transition: transform 0.15s, border-color 0.15s;
+  }
+  a.card:hover { transform: translateY(-3px); border-color: rgba(140, 170, 255, 0.6); }
+  .card h2 { font-size: 16px; color: #bcd0ff; margin-bottom: 8px; }
+  .card .tag { font-size: 11px; color: #7fd0a0; margin-bottom: 8px; }
+  .card p { font-size: 13px; color: #8fa3d9; line-height: 1.7; }
+  footer { margin-top: 40px; font-size: 12px; color: #5f7396; text-align: center; line-height: 1.8; }
+  footer a { color: #8fa3d9; }
+</style>
+</head>
+<body>
+<h1>魚群ABMデモ集</h1>
+<div id="lead">
+  エージェントベースモデル（ABM）による群れシミュレーション。<br>
+  すべてブラウザ内で動きます（サーバー計算なし）。カードをクリックで起動。
+</div>
+
+<div id="grid">
+  <a class="card" href="boids2d.html">
+    <h2>Boids 2D（鳥の群れ）</h2>
+    <div class="tag">Reynolds 1987 / Canvas 2D</div>
+    <p>整列・結合・分離の3ルールによる古典的Boids。ルールのON/OFF、
+    メトリック/トポロジカル近傍の切替、捕食者アタック、
+    速度ベクトル分布と整列度φの可視化つき。</p>
+  </a>
+
+  <a class="card" href="boids3d.html">
+    <h2>Boids 3D（魚とサメ）</h2>
+    <div class="tag">Reynolds 1987 + Ballerini 2008 / Three.js</div>
+    <p>水槽の中を泳ぐ3D魚群。近い順k匹のトポロジカル近傍、
+    サメ（直進型とABM追跡型）、水流（海流・渦・乱流）、
+    魚の種類切替。</p>
+  </a>
+
+  <a class="card" href="sannomiya2d.html">
+    <h2>三宮モデル 2D</h2>
+    <div class="tag">三宮 1993（水産工学）/ Canvas 2D</div>
+    <p>実魚の水槽実験から推定したパラメータによる物理モデルの再現。
+    情報量パラメータM_b/M_c、トラップへの入網・脱出、
+    flash expansion。</p>
+  </a>
+
+  <a class="card" href="sannomiya3d.html">
+    <h2>三宮×Boids ハイブリッド 3D</h2>
+    <div class="tag">三宮 1993 の3D一般化 / Three.js</div>
+    <p>三宮モデルの力学を3Dへ一般化。魚礁（反発＋誘引）に
+    群れが蝟集する様子、Boids相当の3ルール調整、サメ、
+    壁の誘引力の切替。</p>
+  </a>
+
+  <a class="card" href="viewer.html">
+    <h2>流体相互作用モデル 再生ビューア</h2>
+    <div class="tag">Filella 2018系 / Python計算結果の再生</div>
+    <p>魚自身が作る流れ（ダイポール）が他の魚を動かすモデルの
+    計算結果（ミリング=渦状態）を3D再生。視覚＋流体だけで
+    渦が創発する。</p>
+  </a>
+</div>
+
+<footer>
+  参考文献: C. Reynolds (SIGGRAPH 1987) ／ M. Ballerini et al. (PNAS 2008) ／
+  三宮信夫「魚群の行動モデルとシミュレーション」水産工学 30(1), 1993 ／
+  A. Filella et al. (PRL 2018)<br>
+  MIT License
+</footer>
+</body>
+</html>

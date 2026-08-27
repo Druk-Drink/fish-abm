@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三宮モデル 魚群シミュレーション</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  canvas { display: block; }
+  #panel {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(15, 22, 45, 0.88); color: #dbe4ff;
+    border: 1px solid rgba(120, 150, 255, 0.25); border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; width: 260px;
+    backdrop-filter: blur(6px); user-select: none;
+  }
+  #panel h1 { font-size: 15px; margin-bottom: 4px; color: #9db4ff; }
+  #sub { font-size: 10px; color: #7284b3; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; margin: 8px 0 2px; }
+  .val { color: #8fa3d9; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: #6c8cff; }
+  .rule-head { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+  .rule-head input[type=checkbox] { accent-color: #6c8cff; }
+  button {
+    width: 100%; margin-top: 8px; padding: 6px; border-radius: 6px;
+    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
+    color: #dbe4ff; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: rgba(90, 115, 210, 0.45); }
+  #hint { margin-top: 10px; font-size: 11px; color: #7284b3; line-height: 1.6; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="panel">
+  <h1>三宮モデル（1993）</h1>
+  <div id="sub">水産工学 Vol.30 No.1 の物理モデルを再現<br>水槽 150×100cm・タイリクバラタナゴ実測パラメータ</div>
+
+  <div class="row"><span>個体数 N</span><span class="val" id="countVal">20</span></div>
+  <input type="range" id="count" min="5" max="60" step="5" value="20">
+
+  <div class="row"><span>M_b（位置情報を得る尾数）</span><span class="val" id="mbVal">19</span></div>
+  <input type="range" id="mb" min="1" max="19" step="1" value="19">
+
+  <div class="row"><span>M_c（速度情報を得る尾数）</span><span class="val" id="mcVal">19</span></div>
+  <input type="range" id="mc" min="1" max="19" step="1" value="19">
+
+  <div class="rule-head">
+    <input type="checkbox" id="trapOn" checked>
+    <label for="trapOn">トラップ（箱型障害物）</label>
+  </div>
+
+  <div class="row"><span>群れの数 M</span><span class="val" id="schoolVal">–</span></div>
+
+  <button id="enemyBtn">敵を放つ（flash expansion）</button>
+  <button id="resetBtn">リセット</button>
+
+  <div id="hint">
+    M_b・M_c = 各個体が近い順に何尾から情報を得るか。<br>
+    大きい→群れが割れない／トラップから出られない。<br>
+    小さい→群れが分裂しやすい／脱出できる。<br>
+    壁・トラップには反発力と<b>誘引力</b>の両方が働く（網沿い遊泳の再現）。
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---- 論文の定数（単位: cm, g, sec）----
+const TANK = { w: 150, h: 100 };
+const MASS = 2.58;      // 平均質量 (g)
+const ALPHA2 = 50;      // 個体間誘引力の作用距離 (cm)
+const DELTA = 50;       // 成群力の作用距離 (cm)
+const DPLUS = 5;        // 壁の反発の臨界距離 (cm)
+const DMINUS = 20;      // 壁の誘引の臨界距離 (cm)
+
+// 論文 Table 2（データIII, N_f=5）の推定パラメータ。5グループに割り当てる
+const TABLE2 = [
+  { a1: -0.00366, a2: 11.9, a3: 35.0, kb1: -6.20, kb2: 4.20, kc: 1.57, al1: 8.47, kwp: 10.6, kwm: 3.19 },
+  { a1: -0.00275, a2: 11.0, a3: 38.4, kb1: -6.40, kb2: 4.38, kc: 1.31, al1: 8.44, kwp: 13.1, kwm: 2.90 },
+  { a1: -0.00330, a2: 10.9, a3: 37.9, kb1: -4.40, kb2: 3.11, kc: 1.49, al1: 8.35, kwp:  7.3, kwm: 3.58 },
+  { a1: -0.00180, a2: 10.6, a3: 46.4, kb1: -5.60, kb2: 2.57, kc: 1.30, al1: 9.64, kwp: 19.8, kwm: 3.91 },
+  { a1: -0.00122, a2: 10.4, a3: 52.9, kb1: -6.90, kb2: 4.02, kc: 1.46, al1: 8.88, kwp: 13.8, kwm: 3.17 },
+];
+const GROUP_COLORS = ["#8fd3ff", "#7de07d", "#ffe066", "#ff8fa3", "#c9a0ff"];
+
+const params = { N: 20, Mb: 19, Mc: 19, trap: true };
+const DT = 0.02;         // 積分の時間刻み (sec)
+const SUBSTEPS = 2;      // 1フレームあたりのステップ数
+
+function bind(id, key, display, isCheck) {
+  const el = document.getElementById(id);
+  el.addEventListener("input", () => {
+    params[key] = isCheck ? el.checked : parseInt(el.value);
+    if (display) document.getElementById(display).textContent = el.value;
+    if (key === "N") { syncMbMcMax(); initFish(); }
+    if (key === "trap") buildWalls();
+  });
+}
+bind("count", "N", "countVal");
+bind("mb", "Mb", "mbVal");
+bind("mc", "Mc", "mcVal");
+bind("trapOn", "trap", null, true);
+
+function syncMbMcMax() {
+  for (const id of ["mb", "mc"]) {
+    const el = document.getElementById(id);
+    el.max = params.N - 1;
+    if (parseInt(el.value) > params.N - 1) {
+      el.value = params.N - 1;
+      el.dispatchEvent(new Event("input"));
+    }
+  }
+}
+
+// ---- 壁・トラップ（線分の集合）----
+let walls = [];
+function buildWalls() {
+  walls = [
+    // 水槽の4辺
+    { x1: 0, y1: 0, x2: TANK.w, y2: 0 },
+    { x1: TANK.w, y1: 0, x2: TANK.w, y2: TANK.h },
+    { x1: TANK.w, y1: TANK.h, x2: 0, y2: TANK.h },
+    { x1: 0, y1: TANK.h, x2: 0, y2: 0 },
+  ];
+  if (params.trap) {
+    // 箱型トラップ（下側に開口部）: 論文 Fig.6 の設定に相当
+    const cx = 100, top = 15, w = 30, h = 30;
+    walls.push(
+      { x1: cx - w / 2, y1: top, x2: cx - w / 2, y2: top + h, trap: true },
+      { x1: cx + w / 2, y1: top, x2: cx + w / 2, y2: top + h, trap: true },
+      { x1: cx - w / 2, y1: top, x2: cx + w / 2, y2: top, trap: true },
+    );
+  }
+}
+buildWalls();
+
+// ---- 魚 ----
+let fish = [];
+function initFish() {
+  fish = [];
+  for (let i = 0; i < params.N; i++) {
+    const g = i % TABLE2.length; // 論文同様、5グループに均等割り
+    const p = TABLE2[g];
+    const a = Math.random() * Math.PI * 2;
+    fish.push({
+      x: 15 + Math.random() * 30,
+      y: TANK.h - 40 + Math.random() * 30,
+      vx: Math.cos(a) * p.a2,
+      vy: Math.sin(a) * p.a2,
+      g,
+    });
+  }
+}
+initFish();
+
+// ---- 敵（直線的に横切る。論文 Fig.7: 反発力は個体間の数十倍）----
+let enemy = null;
+const ENEMY_R = 25, ENEMY_K = 240; // 作用距離(cm)と反発力の強さ(dyn)
+document.getElementById("enemyBtn").addEventListener("click", () => {
+  let cx = 0, cy = 0;
+  for (const f of fish) { cx += f.x; cy += f.y; }
+  cx /= fish.length; cy /= fish.length;
+  const fromLeft = cx > TANK.w / 2;
+  const ex = fromLeft ? -15 : TANK.w + 15;
+  const ey = cy + (Math.random() - 0.5) * 20;
+  const d = Math.hypot(cx - ex, cy - ey) || 1;
+  const speed = 30; // cm/s
+  enemy = { x: ex, y: ey, vx: (cx - ex) / d * speed, vy: (cy - ey) / d * speed };
+});
+document.getElementById("resetBtn").addEventListener("click", () => { enemy = null; initFish(); });
+
+// ---- 力の計算 ----
+
+// 個体間誘引力 b(r): 近距離で負（分離）、α_i1 を超えると正（結合）の区分線形
+function bfun(p, r) {
+  if (r <= p.al1) return (p.kb2 - p.kb1) * r / p.al1 + p.kb1;
+  if (r <= ALPHA2) return p.kb2;
+  return 0;
+}
+
+// 壁1本からの力: 接近時は反発(d⁺以内)、離脱時は誘引(d⁻以内)。式(7)-(9)
+function wallForce(f, p, seg, F) {
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len2 = dx * dx + dy * dy;
+  const t = ((f.x - seg.x1) * dx + (f.y - seg.y1) * dy) / len2;
+  if (t < 0 || t > 1) return; // 線分の外側は無視（簡略化）
+  const cx = seg.x1 + t * dx, cy = seg.y1 + t * dy;
+  let nx = f.x - cx, ny = f.y - cy;
+  const d = Math.hypot(nx, ny);
+  if (d < 1e-9) return;
+  nx /= d; ny /= d;                      // 壁から魚へ向かう法線
+  const vn = f.vx * nx + f.vy * ny;      // >0: 壁から遠ざかっている
+  if (vn < 0 && d < DPLUS) {
+    const mag = p.kwp * (-vn) * (DPLUS - d) / DPLUS;
+    F.x += mag * nx;
+    F.y += mag * ny;
+  } else if (vn > 0 && d < DMINUS) {
+    const mag = p.kwm * vn * (DMINUS - d) / DMINUS;
+    F.x -= mag * nx;
+    F.y -= mag * ny;
+  }
+}
+
+function step(dt) {
+  const N = fish.length;
+  const Mb = Math.min(params.Mb, N - 1);
+  const Mc = Math.min(params.Mc, N - 1);
+
+  // 近い順ソート（N≤60 なので素朴に）
+  const order = fish.map((f, i) => {
+    const idx = [];
+    for (let j = 0; j < N; j++) if (j !== i) idx.push(j);
+    idx.sort((a, b) => {
+      const da = (fish[a].x - f.x) ** 2 + (fish[a].y - f.y) ** 2;
+      const db = (fish[b].x - f.x) ** 2 + (fish[b].y - f.y) ** 2;
+      return da - db;
+    });
+    return idx;
+  });
+
+  const forces = [];
+  for (let i = 0; i < N; i++) {
+    const f = fish[i];
+    const p = TABLE2[f.g];
+    const F = { x: 0, y: 0 };
+
+    // F_i1: 前方推進力（固有速度 a² へ向かう）
+    const s = Math.hypot(f.vx, f.vy) || 1e-9;
+    const coef = -p.a1 * (s - p.a2) * (s - p.a3);
+    F.x += coef * f.vx;
+    F.y += coef * f.vy;
+
+    // F_i2 第1項: 個体間誘引力（近い順 M_b 尾）
+    for (let k = 0; k < Mb; k++) {
+      const o = fish[order[i][k]];
+      const r = Math.hypot(o.x - f.x, o.y - f.y) || 1e-9;
+      const b = bfun(p, r);
+      F.x += b * (o.x - f.x) / r;
+      F.y += b * (o.y - f.y) / r;
+    }
+    // F_i2 第2項: 成群力（近い順 M_c 尾との速度差の平均）
+    for (let k = 0; k < Mc; k++) {
+      const o = fish[order[i][k]];
+      const r = Math.hypot(o.x - f.x, o.y - f.y);
+      if (r <= DELTA) {
+        F.x += p.kc * (o.vx - f.vx) / Mc;
+        F.y += p.kc * (o.vy - f.vy) / Mc;
+      }
+    }
+
+    // F_i3: 壁・トラップ
+    for (const seg of walls) wallForce(f, p, seg, F);
+
+    // 敵からの強い反発（個体間反発の数十倍）
+    if (enemy) {
+      const dx = f.x - enemy.x, dy = f.y - enemy.y;
+      const d = Math.hypot(dx, dy);
+      if (d < ENEMY_R && d > 0) {
+        const mag = ENEMY_K * (1 - d / ENEMY_R);
+        F.x += mag * dx / d;
+        F.y += mag * dy / d;
+      }
+    }
+    forces.push(F);
+  }
+
+  for (let i = 0; i < N; i++) {
+    const f = fish[i];
+    const p = TABLE2[f.g];
+    f.vx += forces[i].x / MASS * dt;
+    f.vy += forces[i].y / MASS * dt;
+    // a³ は不安定平衡点（超えると発散）なので手前でクランプ
+    const s = Math.hypot(f.vx, f.vy);
+    const cap = p.a3 * 0.95;
+    if (s > cap) { f.vx *= cap / s; f.vy *= cap / s; }
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    // 保険: 水槽内に留める
+    if (f.x < 1) { f.x = 1; if (f.vx < 0) f.vx = -f.vx; }
+    if (f.x > TANK.w - 1) { f.x = TANK.w - 1; if (f.vx > 0) f.vx = -f.vx; }
+    if (f.y < 1) { f.y = 1; if (f.vy < 0) f.vy = -f.vy; }
+    if (f.y > TANK.h - 1) { f.y = TANK.h - 1; if (f.vy > 0) f.vy = -f.vy; }
+  }
+
+  if (enemy) {
+    enemy.x += enemy.vx * dt;
+    enemy.y += enemy.vy * dt;
+    if (enemy.x < -30 || enemy.x > TANK.w + 30 || enemy.y < -30 || enemy.y > TANK.h + 30) enemy = null;
+  }
+}
+
+// ---- 群れの数（距離15cm以内を連結とみなす Union-Find）----
+function countSchools() {
+  const N = fish.length;
+  const parent = new Int32Array(N);
+  for (let i = 0; i < N; i++) parent[i] = i;
+  const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const TH2 = 15 * 15;
+  for (let i = 0; i < N; i++)
+    for (let j = i + 1; j < N; j++) {
+      const d2 = (fish[i].x - fish[j].x) ** 2 + (fish[i].y - fish[j].y) ** 2;
+      if (d2 < TH2) { const a = find(i), b = find(j); if (a !== b) parent[b] = a; }
+    }
+  const roots = new Set();
+  for (let i = 0; i < N; i++) roots.add(find(i));
+  return roots.size;
+}
+
+// ---- 描画 ----
+const fishPath = new Path2D(); // 体長約6cmの魚（+X が進行方向、単位cm）
+fishPath.moveTo(3, 0);
+fishPath.quadraticCurveTo(1.2, 1.4, -1.2, 0.8);
+fishPath.lineTo(-2.8, 1.4);
+fishPath.lineTo(-2.0, 0);
+fishPath.lineTo(-2.8, -1.4);
+fishPath.lineTo(-1.2, -0.8);
+fishPath.quadraticCurveTo(1.2, -1.4, 3, 0);
+fishPath.closePath();
+
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#0b1020";
+  ctx.fillRect(0, 0, W, H);
+
+  const scale = Math.min((W - 60) / TANK.w, (H - 60) / TANK.h);
+  const ox = (W - TANK.w * scale) / 2;
+  const oy = (H - TANK.h * scale) / 2;
+
+  // 水槽
+  ctx.strokeStyle = "rgba(180, 220, 255, 0.55)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(ox, oy, TANK.w * scale, TANK.h * scale);
+
+  // トラップ
+  ctx.strokeStyle = "rgba(255, 150, 120, 0.9)";
+  ctx.lineWidth = 3;
+  for (const seg of walls) {
+    if (!seg.trap) continue;
+    ctx.beginPath();
+    ctx.moveTo(ox + seg.x1 * scale, oy + seg.y1 * scale);
+    ctx.lineTo(ox + seg.x2 * scale, oy + seg.y2 * scale);
+    ctx.stroke();
+  }
+
+  // 魚（グループごとに色分け）
+  for (const f of fish) {
+    const angle = Math.atan2(f.vy, f.vx);
+    ctx.setTransform(
+      DPR * scale * Math.cos(angle), DPR * scale * Math.sin(angle),
+      -DPR * scale * Math.sin(angle), DPR * scale * Math.cos(angle),
+      DPR * (ox + f.x * scale), DPR * (oy + f.y * scale)
+    );
+    ctx.fillStyle = GROUP_COLORS[f.g];
+    ctx.fill(fishPath);
+  }
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // 敵
+  if (enemy) {
+    const angle = Math.atan2(enemy.vy, enemy.vx);
+    ctx.setTransform(
+      DPR * scale * 2.2 * Math.cos(angle), DPR * scale * 2.2 * Math.sin(angle),
+      -DPR * scale * 2.2 * Math.sin(angle), DPR * scale * 2.2 * Math.cos(angle),
+      DPR * (ox + enemy.x * scale), DPR * (oy + enemy.y * scale)
+    );
+    ctx.fillStyle = "#ff5c5c";
+    ctx.fill(fishPath);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+}
+
+let frame = 0;
+function loop() {
+  for (let k = 0; k < SUBSTEPS; k++) step(DT);
+  draw();
+  if (++frame % 30 === 0) {
+    document.getElementById("schoolVal").textContent = countSchools();
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

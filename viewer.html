@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>hydro_school 3Dビューア</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  #panel {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(15, 22, 45, 0.88); color: #dbe4ff;
+    border: 1px solid rgba(120, 150, 255, 0.25); border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; width: 260px;
+    backdrop-filter: blur(6px); user-select: none; z-index: 10;
+  }
+  #panel h1 { font-size: 15px; margin-bottom: 4px; color: #9db4ff; }
+  #tag { font-size: 10px; color: #7284b3; word-break: break-all; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; margin: 8px 0 2px; }
+  .val { color: #8fa3d9; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: #6c8cff; }
+  button {
+    width: 100%; margin-top: 8px; padding: 6px; border-radius: 6px;
+    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
+    color: #dbe4ff; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: rgba(90, 115, 210, 0.45); }
+  #hint { margin-top: 10px; font-size: 11px; color: #7284b3; line-height: 1.5; }
+  #nodata {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #dbe4ff; font-size: 14px; line-height: 2; text-align: center; z-index: 20;
+    background: #0b1020;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script src="viewer_data.js"></script>
+</head>
+<body>
+
+<div id="panel">
+  <h1>hydro_school 3Dビューア</h1>
+  <div id="tag"></div>
+
+  <button id="playBtn">⏸ 一時停止</button>
+
+  <div class="row"><span>時刻 t</span><span class="val" id="tVal">0.0</span></div>
+  <input type="range" id="seek" min="0" max="1" step="0.001" value="0">
+
+  <div class="row"><span>再生速度</span><span class="val" id="speedVal">1x</span></div>
+  <input type="range" id="speed" min="0.25" max="4" step="0.25" value="1">
+
+  <div class="row"><span>魚のサイズ</span><span class="val" id="sizeVal">1.0</span></div>
+  <input type="range" id="fishSize" min="0.2" max="3" step="0.1" value="1.0">
+
+  <div class="row"><span>整列度 P</span><span class="val" id="pVal">–</span></div>
+  <div class="row"><span>回転度 M</span><span class="val" id="mVal">–</span></div>
+
+  <div id="hint">ドラッグ：視点回転 / ホイール：ズーム<br>
+    2Dデータ（run.py）は1平面上、<br>3Dデータ（run3d.py）は立体表示</div>
+</div>
+
+<div id="nodata" style="display:none">
+  viewer_data.js が見つかりません。<br>
+  先に <code>python3 export_viewer.py</code> を実行してください。
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+
+const DATA = window.SCHOOL_DATA;
+if (!DATA) {
+  document.getElementById("nodata").style.display = "flex";
+  throw new Error("no data");
+}
+document.getElementById("tag").textContent = DATA.tag;
+
+// ---- データの正規化：バウンディングボックスをステージサイズに合わせる ----
+// 2Dデータ: sim(x,y) → world(X,Z)、高さは固定
+// 3Dデータ: sim(x,y,z) → world(X,Z,Y)（simのzを高さに）
+const IS3D = !!DATA.z;
+const STAGE = 80; // 最大辺の表示サイズ
+let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+let zmin = Infinity, zmax = -Infinity;
+for (let f = 0; f < DATA.frames; f++) {
+  for (let i = 0; i < DATA.n; i++) {
+    const x = DATA.x[f][i], y = DATA.y[f][i];
+    if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+    if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+    if (IS3D) {
+      const z = DATA.z[f][i];
+      if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+    }
+  }
+}
+const cx = (xmin + xmax) / 2, cy = (ymin + ymax) / 2;
+const cz = IS3D ? (zmin + zmax) / 2 : 0;
+const extent = Math.max(xmax - xmin, ymax - ymin, IS3D ? zmax - zmin : 0, 1e-9);
+const K = STAGE / extent;
+const FISH_Y = IS3D ? STAGE * 0.45 : 2; // 3Dは群れの中心を床の上に浮かせる
+
+// ---- シーン ----
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(STAGE * 0.9, STAGE * 0.7, STAGE * 0.9);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0x8899cc, 0.7));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(60, 100, 40);
+scene.add(dirLight);
+
+const floorGrid = new THREE.GridHelper(STAGE * 1.6, 16, 0x5a7ad0, 0x2c3f6e);
+scene.add(floorGrid);
+
+window.addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---- 魚（boids3d.html と同じプリミティブ結合、+Z が進行方向） ----
+function buildFishGeometry() {
+  const body = new THREE.SphereGeometry(1, 12, 10);
+  body.scale(0.38, 0.62, 1.35);
+  const tail = new THREE.ConeGeometry(0.85, 1.1, 4);
+  tail.rotateX(Math.PI / 2);
+  tail.rotateZ(Math.PI / 2);
+  tail.scale(0.12, 1.1, 1);
+  tail.translate(0, 0, -1.75);
+  const fin = new THREE.ConeGeometry(0.45, 0.6, 4);
+  fin.scale(0.12, 1, 1);
+  fin.translate(0, 0.75, -0.15);
+  return mergeGeometries([body, tail, fin]);
+}
+
+const fishMesh = new THREE.InstancedMesh(
+  buildFishGeometry(),
+  new THREE.MeshStandardMaterial({ color: 0x8fd3ff, roughness: 0.4 }),
+  DATA.n
+);
+fishMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(fishMesh);
+
+// ---- 再生制御 ----
+let playing = true;
+let frameFloat = 0;                 // 小数フレーム（スナップショット間は補間）
+let fishScale = 1.0;
+const BASE_FPS = 20;                // 1x のときのスナップショット消化速度
+let speed = 1;
+
+const playBtn = document.getElementById("playBtn");
+const seek = document.getElementById("seek");
+const tVal = document.getElementById("tVal");
+const pVal = document.getElementById("pVal");
+const mVal = document.getElementById("mVal");
+
+playBtn.addEventListener("click", () => {
+  playing = !playing;
+  playBtn.textContent = playing ? "⏸ 一時停止" : "▶ 再生";
+});
+seek.addEventListener("input", () => {
+  frameFloat = parseFloat(seek.value) * (DATA.frames - 1);
+});
+document.getElementById("speed").addEventListener("input", e => {
+  speed = parseFloat(e.target.value);
+  document.getElementById("speedVal").textContent = speed + "x";
+});
+document.getElementById("fishSize").addEventListener("input", e => {
+  fishScale = parseFloat(e.target.value);
+  document.getElementById("sizeVal").textContent = fishScale.toFixed(1);
+});
+
+function wrapAngle(a) {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+const _mat = new THREE.Matrix4();
+const _quat = new THREE.Quaternion();
+const _pos = new THREE.Vector3();
+const _look = new THREE.Vector3();
+const _lookMat = new THREE.Matrix4();
+const _up = new THREE.Vector3(0, 1, 0);
+const _scale = new THREE.Vector3();
+
+function render() {
+  const f0 = Math.floor(frameFloat);
+  const f1 = Math.min(f0 + 1, DATA.frames - 1);
+  const u = frameFloat - f0;
+
+  // 魚のサイズ：ステージスケールに対して見やすい既定値 × スライダー
+  const s = 0.18 * (STAGE / 80) * fishScale;
+  _scale.set(s, s, s);
+
+  for (let i = 0; i < DATA.n; i++) {
+    const x = (DATA.x[f0][i] * (1 - u) + DATA.x[f1][i] * u - cx) * K;
+    const z = (DATA.y[f0][i] * (1 - u) + DATA.y[f1][i] * u - cy) * K;
+    let py, dx, dy, dz;
+    if (IS3D) {
+      py = FISH_Y + (DATA.z[f0][i] * (1 - u) + DATA.z[f1][i] * u - cz) * K;
+      // 向きベクトルは成分補間して正規化。sim(x,y,z)→world(X,Z,Y)
+      dx = DATA.ex[f0][i] * (1 - u) + DATA.ex[f1][i] * u;
+      dz = DATA.ey[f0][i] * (1 - u) + DATA.ey[f1][i] * u;
+      dy = DATA.ez[f0][i] * (1 - u) + DATA.ez[f1][i] * u;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      dx /= len; dy /= len; dz /= len;
+    } else {
+      py = FISH_Y;
+      const a0 = DATA.th[f0][i];
+      const th = a0 + wrapAngle(DATA.th[f1][i] - a0) * u;
+      dx = Math.cos(th); dy = 0; dz = Math.sin(th);
+    }
+    _pos.set(x, py, z);
+    _look.set(x + dx, py + dy, z + dz);
+    _lookMat.lookAt(_look, _pos, _up);
+    _quat.setFromRotationMatrix(_lookMat);
+    _mat.compose(_pos, _quat, _scale);
+    fishMesh.setMatrixAt(i, _mat);
+  }
+  fishMesh.instanceMatrix.needsUpdate = true;
+
+  tVal.textContent = (DATA.t[f0] * (1 - u) + DATA.t[f1] * u).toFixed(1);
+  pVal.textContent = DATA.P[f0].toFixed(2);
+  mVal.textContent = DATA.M[f0].toFixed(2);
+  if (playing) seek.value = (frameFloat / (DATA.frames - 1)).toFixed(3);
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+  if (playing) {
+    frameFloat += dt * BASE_FPS * speed;
+    if (frameFloat >= DATA.frames - 1) frameFloat = 0; // ループ再生
+  }
+  render();
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

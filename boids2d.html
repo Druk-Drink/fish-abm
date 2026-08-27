@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boids 2D シミュレーション</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  canvas { display: block; }
+  #panel {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(15, 22, 45, 0.88); color: #dbe4ff;
+    border: 1px solid rgba(120, 150, 255, 0.25); border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; width: 250px;
+    backdrop-filter: blur(6px); user-select: none;
+  }
+  #panel h1 { font-size: 15px; margin-bottom: 10px; color: #9db4ff; }
+  .rule { margin-bottom: 10px; }
+  .rule-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .rule-head input[type=checkbox] { accent-color: #6c8cff; }
+  .rule-head label { cursor: pointer; }
+  input[type=range] { width: 100%; accent-color: #6c8cff; }
+  .row { display: flex; justify-content: space-between; margin: 8px 0 2px; }
+  .val { color: #8fa3d9; font-variant-numeric: tabular-nums; }
+  button {
+    width: 100%; margin-top: 8px; padding: 6px; border-radius: 6px;
+    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
+    color: #dbe4ff; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: rgba(90, 115, 210, 0.45); }
+  #hint { margin-top: 10px; font-size: 11px; color: #7284b3; line-height: 1.5; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="panel">
+  <h1>Boids 2D</h1>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="alignOn" checked>
+      <label for="alignOn">群れと同じ方向に飛ぼう</label>
+    </div>
+    <input type="range" id="alignW" min="0" max="3" step="0.1" value="1.0">
+  </div>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="cohesionOn" checked>
+      <label for="cohesionOn">群れの中心に集まろう</label>
+    </div>
+    <input type="range" id="cohesionW" min="0" max="3" step="0.1" value="0.8">
+  </div>
+
+  <div class="rule">
+    <div class="rule-head">
+      <input type="checkbox" id="separationOn" checked>
+      <label for="separationOn">他の鳥と衝突しないように</label>
+    </div>
+    <input type="range" id="separationW" min="0" max="3" step="0.1" value="1.5">
+  </div>
+
+  <div class="row" style="margin-top: 12px;"><span>近傍の定義（整列・結合）</span></div>
+  <div class="rule-head">
+    <input type="radio" name="mode" id="modeMetric" checked>
+    <label for="modeMetric">距離で見る（半径R以内の全員）</label>
+  </div>
+  <div class="rule-head">
+    <input type="radio" name="mode" id="modeTopo">
+    <label for="modeTopo">数で見る（近い順にk羽）</label>
+  </div>
+  <div class="row"><span>k（見る羽数）</span><span class="val" id="kVal">7</span></div>
+  <input type="range" id="kNeighbors" min="1" max="15" step="1" value="7">
+
+  <div class="row"><span>個体数</span><span class="val" id="countVal">100</span></div>
+  <input type="range" id="count" min="10" max="500" step="10" value="100">
+
+  <div class="row"><span>視界半径</span><span class="val" id="perceptionVal">60</span></div>
+  <input type="range" id="perception" min="20" max="150" step="5" value="60">
+
+  <div class="row"><span>最高速度</span><span class="val" id="speedVal">1</span></div>
+  <input type="range" id="speed" min="0.2" max="4" step="0.1" value="1">
+
+  <div class="rule-head" style="margin-top: 10px;">
+    <input type="checkbox" id="distOn" checked>
+    <label for="distOn">速度ベクトル分布を表示</label>
+  </div>
+
+  <button id="attackSimple">捕食者アタック（シンプル版）</button>
+  <button id="attackAbm">捕食者アタック（ABM版）</button>
+  <button id="clearObstacles">障害物をクリア</button>
+  <div id="hint">クリック：障害物を設置<br>画面端はループします<br>φ = 整列度（1: 全員同方向、0: バラバラ）<br>分離と群れ判定は常に半径Rベース</div>
+</div>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---- パラメータ（UIと連動） ----
+const params = {
+  alignOn: true,  alignW: 1.0,
+  cohesionOn: true, cohesionW: 0.8,
+  separationOn: true, separationW: 1.5,
+  count: 100,
+  perception: 60,
+  maxSpeed: 1,
+  maxForce: 0.08,
+  obstacleAvoidW: 3.0,
+};
+
+function bind(id, key, isCheck, display) {
+  const el = document.getElementById(id);
+  el.addEventListener("input", () => {
+    params[key] = isCheck ? el.checked : parseFloat(el.value);
+    if (display) document.getElementById(display).textContent = el.value;
+    if (key === "count") syncCount();
+  });
+}
+bind("alignOn", "alignOn", true);
+bind("alignW", "alignW", false);
+bind("cohesionOn", "cohesionOn", true);
+bind("cohesionW", "cohesionW", false);
+bind("separationOn", "separationOn", true);
+bind("separationW", "separationW", false);
+bind("count", "count", false, "countVal");
+bind("perception", "perception", false, "perceptionVal");
+bind("speed", "maxSpeed", false, "speedVal");
+bind("distOn", "showDist", true);
+params.showDist = true;
+
+// 近傍の定義モード（Ballerini et al. 2008: 実際のムクドリは k≈6〜7 のトポロジカル型）
+params.topological = false;
+params.k = 7;
+document.getElementById("modeMetric").addEventListener("change", () => params.topological = false);
+document.getElementById("modeTopo").addEventListener("change", () => params.topological = true);
+bind("kNeighbors", "k", false, "kVal");
+
+// ---- 障害物 ----
+const obstacles = [];
+canvas.addEventListener("click", e => {
+  obstacles.push({ x: e.clientX, y: e.clientY, r: 25 + Math.random() * 20 });
+});
+document.getElementById("clearObstacles").addEventListener("click", () => {
+  obstacles.length = 0;
+});
+
+// ---- 捕食者 ----
+// シンプル版: 群れの重心へ直線等速で突進するだけの「動く環境」（エージェントではない）
+// ABM版: 最近傍の鳥を知覚して追跡する操舵ルールを持つエージェント。
+//        スタミナが尽きると追跡をやめて直進離脱する。捕獲判定はなし（擾乱実験用）
+let predator = null;
+
+function spawnPredator(mode) {
+  let cx = 0, cy = 0;
+  for (const b of boids) { cx += b.x; cy += b.y; }
+  cx /= boids.length;
+  cy /= boids.length;
+  const side = Math.floor(Math.random() * 4);
+  const px = side === 0 ? -80 : side === 1 ? W + 80 : Math.random() * W;
+  const py = side < 2 ? Math.random() * H : (side === 2 ? -80 : H + 80);
+  const d = Math.hypot(cx - px, cy - py) || 1;
+  const speed = mode === "simple" ? Math.max(6, params.maxSpeed * 3) : params.maxSpeed * 1.5;
+  predator = {
+    mode,
+    x: px, y: py,
+    vx: (cx - px) / d * speed,
+    vy: (cy - py) / d * speed,
+    stamina: 600, // 約10秒（ABM版のみ消費）
+  };
+}
+document.getElementById("attackSimple").addEventListener("click", () => spawnPredator("simple"));
+document.getElementById("attackAbm").addEventListener("click", () => spawnPredator("abm"));
+
+function updatePredator() {
+  if (!predator) return;
+  const p = predator;
+  if (p.mode === "abm" && p.stamina > 0 && boids.length > 0) {
+    // 知覚: 最近傍の鳥を狙い直す
+    let target = null, bd = Infinity;
+    for (const b of boids) {
+      const d2 = (b.x - p.x) ** 2 + (b.y - p.y) ** 2;
+      if (d2 < bd) { bd = d2; target = b; }
+    }
+    // 操舵: 鳥より少し速いが旋回は鈍い（獲物側に回避の余地を残す）
+    const pSpeed = params.maxSpeed * 1.5;
+    const pForce = 0.05;
+    const dx = target.x - p.x, dy = target.y - p.y;
+    const d = Math.hypot(dx, dy) || 1;
+    let sx = (dx / d) * pSpeed - p.vx;
+    let sy = (dy / d) * pSpeed - p.vy;
+    const sm = Math.hypot(sx, sy);
+    if (sm > pForce) { sx = (sx / sm) * pForce; sy = (sy / sm) * pForce; }
+    p.vx += sx;
+    p.vy += sy;
+    const spd = Math.hypot(p.vx, p.vy);
+    if (spd > pSpeed) { p.vx = (p.vx / spd) * pSpeed; p.vy = (p.vy / spd) * pSpeed; }
+    p.stamina--;
+  }
+  p.x += p.vx;
+  p.y += p.vy;
+  // シンプル版とスタミナ切れのABM版は画面外に抜けたら消える
+  if (p.x < -150 || p.x > W + 150 || p.y < -150 || p.y > H + 150) {
+    if (p.mode === "simple" || p.stamina <= 0) predator = null;
+  }
+}
+
+// ---- Boid ----
+class Boid {
+  constructor() {
+    this.x = Math.random() * W;
+    this.y = Math.random() * H;
+    const a = Math.random() * Math.PI * 2;
+    const s = 1 + Math.random() * 2;
+    this.vx = Math.cos(a) * s;
+    this.vy = Math.sin(a) * s;
+    this.ax = 0;
+    this.ay = 0;
+  }
+}
+
+const boids = [];
+function syncCount() {
+  while (boids.length < params.count) boids.push(new Boid());
+  boids.length = params.count;
+}
+syncCount();
+
+// ---- 空間グリッド（近傍探索を O(N²) から改善） ----
+function buildGrid(cellSize) {
+  const grid = new Map();
+  for (let i = 0; i < boids.length; i++) {
+    const b = boids[i];
+    const key = Math.floor(b.x / cellSize) + "," + Math.floor(b.y / cellSize);
+    let cell = grid.get(key);
+    if (!cell) grid.set(key, cell = []);
+    cell.push(b);
+  }
+  return grid;
+}
+
+function forEachNeighbor(grid, cellSize, b, fn) {
+  const cx = Math.floor(b.x / cellSize);
+  const cy = Math.floor(b.y / cellSize);
+  for (let gx = cx - 1; gx <= cx + 1; gx++) {
+    for (let gy = cy - 1; gy <= cy + 1; gy++) {
+      const cell = grid.get(gx + "," + gy);
+      if (!cell) continue;
+      for (let i = 0; i < cell.length; i++) {
+        const other = cell[i];
+        if (other !== b) fn(other);
+      }
+    }
+  }
+}
+
+// 力を maxForce に収めた操舵ベクトル（desired - velocity）を加算
+function steer(b, desiredX, desiredY, weight) {
+  const mag = Math.hypot(desiredX, desiredY);
+  if (mag === 0) return;
+  const sx = (desiredX / mag) * params.maxSpeed - b.vx;
+  const sy = (desiredY / mag) * params.maxSpeed - b.vy;
+  const smag = Math.hypot(sx, sy);
+  const limit = Math.min(smag, params.maxForce);
+  if (smag === 0) return;
+  b.ax += (sx / smag) * limit * weight;
+  b.ay += (sy / smag) * limit * weight;
+}
+
+// ---- 群（クラスタ）の検出：視界半径内で繋がった個体を Union-Find でまとめる ----
+const palette = ["#8fd3ff", "#ffb86c", "#7de07d", "#ff8fa3", "#c9a0ff", "#ffe066", "#66e0d0", "#f0a0ff"];
+let clusterOf = [];        // 各個体の所属クラスタ根
+let clusterMap = new Map(); // 根 → {n, ux, uy, phi, color, minIdx}
+let clusterList = [];       // 大きい順
+let globalPhi = 0;
+
+function ufFind(parent, i) {
+  while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+  return i;
+}
+
+// kNN 用の再利用バッファ（上位 k 個の挿入選択）
+const knnD = new Float64Array(16);
+const knnB = new Array(16);
+
+function update() {
+  const R = params.perception;
+  const topo = params.topological;
+  const grid = buildGrid(R);
+
+  let parent = null;
+  if (params.showDist) {
+    parent = new Int32Array(boids.length);
+    for (let i = 0; i < boids.length; i++) { parent[i] = i; boids[i].idx = i; }
+  }
+
+  updatePredator();
+
+  for (const b of boids) {
+    b.ax = 0;
+    b.ay = 0;
+
+    let alignX = 0, alignY = 0;
+    let cohX = 0, cohY = 0;
+    let sepX = 0, sepY = 0;
+    let n = 0, nSep = 0;
+    const sepDist = R * 0.45;
+
+    forEachNeighbor(grid, R, b, other => {
+      const dx = other.x - b.x;
+      const dy = other.y - b.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > R * R) return;
+      if (parent) {
+        const ra = ufFind(parent, b.idx), rb = ufFind(parent, other.idx);
+        if (ra !== rb) parent[rb] = ra;
+      }
+      if (!topo) {
+        n++;
+        alignX += other.vx;
+        alignY += other.vy;
+        cohX += other.x;
+        cohY += other.y;
+      }
+      if (d2 < sepDist * sepDist && d2 > 0) {
+        // 近いほど強く反発（距離の2乗で減衰）
+        sepX -= dx / d2;
+        sepY -= dy / d2;
+        nSep++;
+      }
+    });
+
+    // トポロジカル近傍：距離に関係なく近い順 k 個体を整列・結合の相手にする
+    // （分離は上の短距離メトリックのまま。Ballerini et al. の SPP 実験と同じ構成）
+    if (topo && boids.length > 1) {
+      const k = Math.min(params.k, boids.length - 1);
+      for (let j = 0; j < k; j++) { knnD[j] = Infinity; knnB[j] = null; }
+      for (const other of boids) {
+        if (other === b) continue;
+        const dx = other.x - b.x;
+        const dy = other.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= knnD[k - 1]) continue;
+        let j = k - 1;
+        while (j > 0 && knnD[j - 1] > d2) {
+          knnD[j] = knnD[j - 1];
+          knnB[j] = knnB[j - 1];
+          j--;
+        }
+        knnD[j] = d2;
+        knnB[j] = other;
+      }
+      for (let j = 0; j < k; j++) {
+        const other = knnB[j];
+        if (!other) break;
+        n++;
+        alignX += other.vx;
+        alignY += other.vy;
+        cohX += other.x;
+        cohY += other.y;
+      }
+    }
+
+    if (n > 0) {
+      if (params.alignOn) steer(b, alignX / n, alignY / n, params.alignW);
+      if (params.cohesionOn) steer(b, cohX / n - b.x, cohY / n - b.y, params.cohesionW);
+    }
+    if (nSep > 0 && params.separationOn) steer(b, sepX, sepY, params.separationW);
+
+    // 捕食者からの逃避
+    if (predator) {
+      const dx = b.x - predator.x;
+      const dy = b.y - predator.y;
+      const d = Math.hypot(dx, dy);
+      const zone = 140;
+      if (d < zone && d > 0) steer(b, dx / d, dy / d, 6 * (zone - d) / zone);
+    }
+
+    // 障害物回避：影響圏内に入ったら離れる方向へ操舵
+    for (const o of obstacles) {
+      const dx = b.x - o.x;
+      const dy = b.y - o.y;
+      const d = Math.hypot(dx, dy);
+      const zone = o.r + 50;
+      if (d < zone && d > 0) {
+        const strength = (zone - d) / zone;
+        steer(b, dx / d, dy / d, params.obstacleAvoidW * strength);
+      }
+    }
+
+    b.vx += b.ax;
+    b.vy += b.ay;
+    const spd = Math.hypot(b.vx, b.vy);
+    if (spd > params.maxSpeed) {
+      b.vx = (b.vx / spd) * params.maxSpeed;
+      b.vy = (b.vy / spd) * params.maxSpeed;
+    } else if (spd < params.maxSpeed * 0.3 && spd > 0) {
+      b.vx = (b.vx / spd) * params.maxSpeed * 0.3;
+      b.vy = (b.vy / spd) * params.maxSpeed * 0.3;
+    }
+
+    b.x += b.vx;
+    b.y += b.vy;
+
+    // 画面端でラップアラウンド
+    if (b.x < 0) b.x += W;
+    if (b.x >= W) b.x -= W;
+    if (b.y < 0) b.y += H;
+    if (b.y >= H) b.y -= H;
+  }
+
+  // クラスタごとの統計（整列度 φ = 単位速度ベクトルの平均の長さ）
+  clusterMap = new Map();
+  clusterList = [];
+  if (parent) {
+    clusterOf.length = boids.length;
+    for (let i = 0; i < boids.length; i++) {
+      const root = ufFind(parent, i);
+      clusterOf[i] = root;
+      let c = clusterMap.get(root);
+      if (!c) clusterMap.set(root, c = { n: 0, ux: 0, uy: 0, minIdx: i });
+      const b = boids[i];
+      const s = Math.hypot(b.vx, b.vy) || 1;
+      c.n++;
+      c.ux += b.vx / s;
+      c.uy += b.vy / s;
+    }
+    let gx = 0, gy = 0;
+    for (const c of clusterMap.values()) {
+      c.phi = Math.hypot(c.ux, c.uy) / c.n;
+      // 群の色は最小メンバー番号から決める（フレーム間でおおむね安定）
+      c.color = c.n >= 5 ? palette[c.minIdx % palette.length] : null;
+      gx += c.ux;
+      gy += c.uy;
+    }
+    globalPhi = Math.hypot(gx, gy) / boids.length;
+    clusterList = [...clusterMap.values()].sort((a, b) => b.n - a.n);
+  }
+}
+
+function draw() {
+  ctx.fillStyle = "#0b1020";
+  ctx.fillRect(0, 0, W, H);
+
+  for (const o of obstacles) {
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 110, 110, 0.18)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 130, 130, 0.6)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  const useClusters = params.showDist && clusterOf.length === boids.length;
+  ctx.fillStyle = "#8fd3ff";
+  const s = 0.75;
+  for (let i = 0; i < boids.length; i++) {
+    const b = boids[i];
+    if (useClusters) {
+      const c = clusterMap.get(clusterOf[i]);
+      ctx.fillStyle = (c && c.color) || "#5f7396";
+    }
+    const angle = Math.atan2(b.vy, b.vx);
+    const cos = Math.cos(angle) * s, sin = Math.sin(angle) * s;
+    ctx.setTransform(DPR * cos, DPR * sin, -DPR * sin, DPR * cos, DPR * b.x, DPR * b.y);
+    ctx.fill(birdPath);
+  }
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  if (predator) {
+    const angle = Math.atan2(predator.vy, predator.vx);
+    const cos = Math.cos(angle) * 1.8, sin = Math.sin(angle) * 1.8;
+    ctx.fillStyle = predator.mode === "abm" ? "#ff9c3c" : "#ff5c5c"; // ABM版は橙、シンプル版は赤
+    ctx.setTransform(DPR * cos, DPR * sin, -DPR * sin, DPR * cos, DPR * predator.x, DPR * predator.y);
+    ctx.fill(birdPath);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  if (useClusters) drawDist();
+}
+
+// 速度空間の散布図：各個体の速度ベクトル (vx, vy) を原点まわりにプロット。
+// 整列が強いと群ごとの点がリング上の一点に収束し、弱いとリング全体に散らばる。
+function drawDist() {
+  const S = 230, pad = 16;
+  const x0 = W - S - pad, y0 = H - S - pad;
+  const cx = x0 + S / 2, cy = y0 + S / 2 + 8;
+  const rMax = S / 2 - 26;
+  const scale = rMax / params.maxSpeed;
+
+  ctx.fillStyle = "rgba(15, 22, 45, 0.88)";
+  ctx.strokeStyle = "rgba(120, 150, 255, 0.25)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x0, y0, S, S, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // 座標軸と |v| = 最高速度 のリング（速さはこのリングにほぼ張り付く）
+  ctx.strokeStyle = "rgba(120, 150, 255, 0.15)";
+  ctx.beginPath();
+  ctx.moveTo(cx - rMax, cy); ctx.lineTo(cx + rMax, cy);
+  ctx.moveTo(cx, cy - rMax); ctx.lineTo(cx, cy + rMax);
+  ctx.stroke();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = "rgba(120, 150, 255, 0.3)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, rMax, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  for (let i = 0; i < boids.length; i++) {
+    const b = boids[i];
+    const c = clusterMap.get(clusterOf[i]);
+    ctx.fillStyle = (c && c.color) || "#5f7396";
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(cx + b.vx * scale - 1.5, cy + b.vy * scale - 1.5, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.font = "11px sans-serif";
+  ctx.fillStyle = "#9db4ff";
+  ctx.fillText("速度ベクトル分布 (vx, vy)", x0 + 12, y0 + 17);
+
+  // 全体と上位クラスタの整列度
+  let ty = y0 + 33;
+  ctx.fillStyle = "#dbe4ff";
+  ctx.fillText(`全体 φ = ${globalPhi.toFixed(2)}`, x0 + 12, ty);
+  ty += 15;
+  ctx.fillText(`群れの数 M = ${clusterList.length}`, x0 + 12, ty);
+  let shown = 0;
+  for (const c of clusterList) {
+    if (!c.color || shown >= 4) continue;
+    ty += 15;
+    ctx.fillStyle = c.color;
+    ctx.fillRect(x0 + 12, ty - 8, 8, 8);
+    ctx.fillStyle = "#dbe4ff";
+    ctx.fillText(`n=${c.n}  φ=${c.phi.toFixed(2)}`, x0 + 25, ty);
+    shown++;
+  }
+}
+
+// 鳥のシルエット（上から見た形、+X が進行方向）
+const birdPath = new Path2D();
+birdPath.moveTo(9, 0);                          // くちばし
+birdPath.quadraticCurveTo(4, 1.6, 1, 2.2);      // 首から肩へ
+birdPath.quadraticCurveTo(-1, 5, -4.5, 8.5);    // 右翼の先端へ
+birdPath.quadraticCurveTo(-2.5, 3.5, -3.5, 1.6); // 翼の後縁から胴へ
+birdPath.lineTo(-8, 2.2);                       // 尾羽の外側
+birdPath.lineTo(-5.5, 0);                       // 尾羽の切れ込み
+birdPath.lineTo(-8, -2.2);
+birdPath.lineTo(-3.5, -1.6);
+birdPath.quadraticCurveTo(-2.5, -3.5, -4.5, -8.5); // 左翼
+birdPath.quadraticCurveTo(-1, -5, 1, -2.2);
+birdPath.quadraticCurveTo(4, -1.6, 9, 0);
+birdPath.closePath();
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
