@@ -5,6 +5,10 @@
 
 **▶ デモを見る: https://druk-drink.github.io/fish-abm/**
 
+
+<img width="720" height="456" alt="boids3d_demo" src="https://github.com/user-attachments/assets/a2be962f-c6e2-4f25-a8fe-f0da32c0d0bb" />
+
+
 | デモ | モデル | 技術 |
 |---|---|---|
 | [Boids 2D（鳥）](https://druk-drink.github.io/fish-abm/boids2d.html) | Reynolds の3ルール＋捕食者＋秩序パラメータ可視化 | Canvas 2D |
