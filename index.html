@@ -3,129 +3,72 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>魚群ABMデモ集 — Boids / 三宮モデル / 流体相互作用</title>
+<title>魚群ABMシミュレーション</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    min-height: 100vh; background: #0b1020; color: #dbe4ff;
+    background: #0d1220; color: #c7d2e8;
     font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
-    display: flex; flex-direction: column; align-items: center;
-    padding: 44px 20px;
+    line-height: 1.8; font-size: 14px;
   }
-  h1 { font-size: 26px; color: #9db4ff; margin-bottom: 8px; }
-  #lead { color: #8fa3d9; font-size: 14px; margin-bottom: 32px; text-align: center; line-height: 1.8; }
-  #wrap { width: 100%; max-width: 980px; }
+  main { max-width: 880px; margin: 0 auto; padding: 48px 20px 64px; }
+  h1 { font-size: 21px; color: #e3eaf7; font-weight: 600; }
+  .intro { color: #7d8aa8; margin: 6px 0 32px; }
+  a { color: #8ab0e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
 
-  a.card {
-    display: block; text-decoration: none; color: inherit; overflow: hidden;
-    background: rgba(15, 22, 45, 0.9); border: 1px solid rgba(120, 150, 255, 0.25);
-    border-radius: 14px; transition: transform 0.15s, border-color 0.15s;
+  .hero video {
+    width: 100%; height: auto; display: block;
+    border: 1px solid #263252; border-radius: 6px; background: #000;
   }
-  a.card:hover { transform: translateY(-3px); border-color: rgba(140, 170, 255, 0.7); }
-  .thumb { display: block; width: 100%; height: auto; }
-  .body { padding: 16px 18px 18px; }
-  .card h2 { font-size: 16px; color: #bcd0ff; margin-bottom: 6px; }
-  .card .tag { font-size: 11px; color: #7fd0a0; margin-bottom: 8px; }
-  .card p { font-size: 13px; color: #8fa3d9; line-height: 1.7; }
+  .hero h2 { font-size: 17px; margin-top: 14px; font-weight: 600; }
+  .hero p { color: #93a2c0; margin-top: 4px; }
+  .meta { font-size: 12px; color: #667394; }
+  .wip { color: #b89a5a; font-size: 12px; font-weight: normal; margin-left: 6px; }
 
-  #hero { margin-bottom: 18px; position: relative; }
-  #hero .body { padding: 20px 24px 24px; display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; }
-  #hero h2 { font-size: 22px; }
-  #hero p { max-width: 560px; }
-  .badge {
-    position: absolute; top: 14px; left: 14px; z-index: 2;
-    background: rgba(108, 140, 255, 0.9); color: #0b1020;
-    font-size: 12px; font-weight: bold; padding: 4px 12px; border-radius: 999px;
+  hr { border: none; border-top: 1px solid #1e2942; margin: 36px 0 28px; }
+  h3 { font-size: 14px; color: #93a2c0; font-weight: 600; margin-bottom: 16px; }
+
+  .list { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 26px; }
+  @media (max-width: 640px) { .list { grid-template-columns: 1fr; } }
+  .item svg {
+    width: 100%; height: auto; display: block;
+    border: 1px solid #263252; border-radius: 6px;
   }
-  .cta {
-    margin-left: auto; align-self: center;
-    background: rgba(108, 140, 255, 0.25); border: 1px solid rgba(140, 170, 255, 0.6);
-    color: #dbe4ff; font-size: 13px; padding: 8px 18px; border-radius: 8px; white-space: nowrap;
-  }
-  #grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-  }
-  .status {
-    display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 999px;
-    margin-left: 8px; vertical-align: 2px; white-space: nowrap;
-    background: rgba(255, 196, 87, 0.14); color: #ffc457;
-    border: 1px solid rgba(255, 196, 87, 0.5);
-  }
-  footer { margin-top: 40px; font-size: 12px; color: #5f7396; text-align: center; line-height: 1.8; }
+  .item h4 { font-size: 14px; margin-top: 10px; font-weight: 600; }
+  .item p { color: #93a2c0; font-size: 13px; margin-top: 2px; }
+
+  footer { margin-top: 44px; font-size: 12px; color: #667394; }
 </style>
 </head>
 <body>
-<h1>魚群ABMデモ集</h1>
-<div id="lead">
-  エージェントベースモデル（ABM）による群れシミュレーション。<br>
-  すべてブラウザ内で動きます（サーバー計算なし）。
-</div>
+<main>
 
-<div id="wrap">
+  <h1>魚群ABMシミュレーション</h1>
+  <p class="intro">群れ行動のエージェントベースモデル（ABM）をブラウザで動かす実験集。計算はすべてクライアント側で行っています。</p>
 
-  <!-- ===== メイン: Boids 3D ===== -->
-  <a class="card" id="hero" href="boids3d.html">
-    <span class="badge">メインデモ</span>
-    <svg class="thumb" viewBox="0 0 960 300" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#101a3a"/><stop offset="1" stop-color="#0a1226"/>
-        </linearGradient>
-        <path id="fish" d="M7,0 Q2.5,2.4 -2.5,1.5 L-5.5,2.8 L-4,0 L-5.5,-2.8 L-2.5,-1.5 Q2.5,-2.4 7,0 Z"/>
-      </defs>
-      <rect width="960" height="300" fill="url(#sea)"/>
-      <!-- 水槽（奥行きのある箱） -->
-      <g stroke="#bfe3ff" stroke-opacity="0.5" fill="none" stroke-width="1.5">
-        <rect x="150" y="60" width="660" height="200"/>
-        <rect x="230" y="30" width="560" height="170"/>
-        <path d="M150,60 L230,30 M810,60 L790,30 M150,260 L230,200 M810,260 L790,200"/>
-      </g>
-      <!-- 砂地 -->
-      <ellipse cx="490" cy="242" rx="330" ry="26" fill="#e9dba6" opacity="0.55"/>
-      <!-- 群れ -->
-      <g fill="#8fd3ff">
-        <use href="#fish" transform="translate(370,120) rotate(-12) scale(2.2)"/>
-        <use href="#fish" transform="translate(430,100) rotate(-8) scale(2.4)"/>
-        <use href="#fish" transform="translate(418,148) rotate(-16) scale(2.1)"/>
-        <use href="#fish" transform="translate(482,128) rotate(-10) scale(2.5)"/>
-        <use href="#fish" transform="translate(468,170) rotate(-18) scale(2.0)"/>
-        <use href="#fish" transform="translate(540,110) rotate(-6) scale(2.3)"/>
-        <use href="#fish" transform="translate(532,152) rotate(-14) scale(2.2)"/>
-        <use href="#fish" transform="translate(590,138) rotate(-10) scale(2.4)"/>
-        <use href="#fish" transform="translate(352,160) rotate(-20) scale(1.9)"/>
-        <use href="#fish" transform="translate(508,90) rotate(-4) scale(2.0)"/>
-        <use href="#fish" transform="translate(566,86) rotate(-8) scale(1.9)"/>
-        <use href="#fish" transform="translate(600,105) rotate(-12) scale(2.0)"/>
-      </g>
-      <!-- サメ -->
-      <g fill="#ff9c3c">
-        <use href="#fish" transform="translate(258,190) rotate(-8) scale(5.5)"/>
-        <path d="M251,168 L259,148 L266,168 Z" opacity="0.95"/>
-      </g>
-      <!-- 水流のゆらぎ -->
-      <g stroke="#7c9aff" stroke-opacity="0.25" fill="none" stroke-width="2">
-        <path d="M180,90 q30,-10 60,0 t60,0"/>
-        <path d="M640,200 q30,-10 60,0 t60,0"/>
-      </g>
-    </svg>
-    <div class="body">
-      <div>
-        <h2>Boids 3D — 魚の群れとサメ</h2>
-        <div class="tag">Reynolds 1987 + Ballerini 2008 ／ Three.js</div>
-        <p>整列・結合・分離の3ルールで泳ぐ3D魚群。近い順k匹のトポロジカル近傍への切替、
-        サメ（直進型・ABM追跡型）、水流（海流・渦・乱流）、魚の種類変更まで全部入り。</p>
-      </div>
-      <span class="cta">▶ デモを開く</span>
-    </div>
-  </a>
+  <div class="hero">
+    <a href="boids3d.html">
+      <video src="hero.mp4" poster="hero.jpg" autoplay loop muted playsinline></video>
+    </a>
+    <h2><a href="boids3d.html">Boids 3D — 魚の群れとサメ</a></h2>
+    <p>整列・結合・分離の3ルールで泳ぐ魚群。近傍の定義（半径R／近い順k匹）の切替、
+    捕食者（直進型・追跡型）、水流、魚の種類変更ができます。上の映像は実際の画面です。</p>
+    <p class="meta">Reynolds (1987), Ballerini et al. (2008) ／ Three.js</p>
+  </div>
 
-  <!-- ===== サブデモ ===== -->
-  <div id="grid">
+  <hr>
+  <h3>その他のモデル</h3>
 
-    <a class="card" href="boids2d.html">
-      <svg class="thumb" viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
-        <defs><path id="bird" d="M6,0 L-4,3.5 L-1.5,0 L-4,-3.5 Z"/></defs>
+  <div class="list">
+
+    <div class="item">
+      <a href="boids2d.html">
+      <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <path id="bird" d="M6,0 L-4,3.5 L-1.5,0 L-4,-3.5 Z"/>
+          <path id="fish" d="M7,0 Q2.5,2.4 -2.5,1.5 L-5.5,2.8 L-4,0 L-5.5,-2.8 L-2.5,-1.5 Q2.5,-2.4 7,0 Z"/>
+        </defs>
         <rect width="320" height="180" fill="#0b1020"/>
         <g fill="#8fd3ff">
           <use href="#bird" transform="translate(150,60) rotate(20) scale(1.8)"/>
@@ -144,15 +87,15 @@
           <circle cx="16" cy="-19" r="2.5" fill="#8fd3ff"/><circle cx="23" cy="-13" r="2.5" fill="#7de07d"/>
         </g>
       </svg>
-      <div class="body">
-        <h2>Boids 2D（鳥）</h2>
-        <div class="tag">Reynolds 1987 ／ Canvas 2D</div>
-        <p>古典Boids。3ルールのON/OFF、捕食者、速度ベクトル分布と整列度φの可視化。</p>
-      </div>
-    </a>
+      </a>
+      <h4><a href="boids2d.html">Boids 2D（鳥）</a></h4>
+      <p>古典Boids。3ルールの切替、捕食者、速度ベクトル分布と整列度φの可視化。</p>
+      <p class="meta">Reynolds (1987) ／ Canvas 2D</p>
+    </div>
 
-    <a class="card" href="sannomiya2d.html">
-      <svg class="thumb" viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
+    <div class="item">
+      <a href="sannomiya2d.html">
+      <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
         <rect width="320" height="180" fill="#0b1020"/>
         <rect x="30" y="22" width="260" height="136" fill="none" stroke="#bfe3ff" stroke-opacity="0.5" stroke-width="1.5"/>
         <path d="M200,40 L200,80 M250,40 L250,80 M200,40 L250,40" stroke="#ff9678" stroke-width="3" fill="none"/>
@@ -167,15 +110,15 @@
           <use href="#fish" transform="translate(222,62) rotate(-15) scale(1.7)" fill="#ffe066"/>
         </g>
       </svg>
-      <div class="body">
-        <h2>三宮モデル 2D<span class="status">🚧 開発中</span></h2>
-        <div class="tag">三宮 1993（水産工学）／ Canvas 2D</div>
-        <p>実魚の実験パラメータによる物理モデル。トラップ入網・脱出、flash expansion。</p>
-      </div>
-    </a>
+      </a>
+      <h4><a href="sannomiya2d.html">三宮モデル 2D</a><span class="wip">開発中</span></h4>
+      <p>実魚の水槽実験パラメータによる物理モデル。トラップ入網・脱出、flash expansion。</p>
+      <p class="meta">三宮 (1993, 水産工学) ／ Canvas 2D</p>
+    </div>
 
-    <a class="card" href="sannomiya3d.html">
-      <svg class="thumb" viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
+    <div class="item">
+      <a href="sannomiya3d.html">
+      <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <radialGradient id="rock" cx="0.35" cy="0.3">
             <stop offset="0" stop-color="#a89a80"/><stop offset="1" stop-color="#5f5546"/>
@@ -199,15 +142,15 @@
           <use href="#fish" transform="translate(138,68) rotate(-20) scale(1.5)" fill="#ffe066"/>
         </g>
       </svg>
-      <div class="body">
-        <h2>三宮×Boids 3D<span class="status">⚙ 調整中</span></h2>
-        <div class="tag">三宮 1993 の3D一般化 ／ Three.js</div>
-        <p>魚礁（反発＋誘引）に群れが蝟集する。3ルール倍率・サメ・壁誘引の切替つき。</p>
-      </div>
-    </a>
+      </a>
+      <h4><a href="sannomiya3d.html">三宮×Boids 3D</a><span class="wip">調整中</span></h4>
+      <p>三宮モデルの力学を3Dへ一般化。魚礁（反発＋誘引）への蝟集、3ルール倍率、サメ。</p>
+      <p class="meta">三宮 (1993) の3D一般化 ／ Three.js</p>
+    </div>
 
-    <a class="card" href="viewer.html">
-      <svg class="thumb" viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
+    <div class="item">
+      <a href="viewer.html">
+      <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
         <rect width="320" height="180" fill="#0b1020"/>
         <g fill="#8fd3ff">
           <use href="#fish" transform="translate(160,34) rotate(180) scale(1.8)"/>
@@ -227,21 +170,20 @@
         </g>
         <circle cx="160" cy="92" r="20" fill="none" stroke="#7c9aff" stroke-opacity="0.3" stroke-dasharray="3 4"/>
       </svg>
-      <div class="body">
-        <h2>流体相互作用 再生ビューア<span class="status">🚧 開発中</span></h2>
-        <div class="tag">Filella 2018系 ／ 計算結果の3D再生</div>
-        <p>魚が作る流れが魚を動かすモデル。視覚＋流体だけで渦（ミリング）が創発。</p>
-      </div>
-    </a>
+      </a>
+      <h4><a href="viewer.html">流体相互作用モデル 再生ビューア</a><span class="wip">開発中</span></h4>
+      <p>魚が作る流れが他の魚を動かすモデルの計算結果を再生。視覚＋流体だけで渦が創発。</p>
+      <p class="meta">Filella et al. (2018) 系 ／ Three.js</p>
+    </div>
 
   </div>
-</div>
 
-<footer>
-  参考文献: C. Reynolds (SIGGRAPH 1987) ／ M. Ballerini et al. (PNAS 2008) ／
-  三宮信夫「魚群の行動モデルとシミュレーション」水産工学 30(1), 1993 ／
-  A. Filella et al. (PRL 2018)<br>
-  MIT License ・ <a href="https://github.com/Druk-Drink/fish-abm" style="color:#8fa3d9">GitHub</a>
-</footer>
+  <footer>
+    参考文献: C. Reynolds, SIGGRAPH 1987 ／ M. Ballerini et al., PNAS 2008 ／
+    三宮信夫, 水産工学 30(1), 1993 ／ A. Filella et al., PRL 120, 2018<br>
+    MIT License ・ <a href="https://github.com/Druk-Drink/fish-abm">GitHub</a>
+  </footer>
+
+</main>
 </body>
 </html>
