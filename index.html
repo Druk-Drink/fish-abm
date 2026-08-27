@@ -46,6 +46,12 @@
     display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
   }
+  .status {
+    display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 999px;
+    margin-left: 8px; vertical-align: 2px; white-space: nowrap;
+    background: rgba(255, 196, 87, 0.14); color: #ffc457;
+    border: 1px solid rgba(255, 196, 87, 0.5);
+  }
   footer { margin-top: 40px; font-size: 12px; color: #5f7396; text-align: center; line-height: 1.8; }
 </style>
 </head>
@@ -162,7 +168,7 @@
         </g>
       </svg>
       <div class="body">
-        <h2>三宮モデル 2D</h2>
+        <h2>三宮モデル 2D<span class="status">🚧 開発中</span></h2>
         <div class="tag">三宮 1993（水産工学）／ Canvas 2D</div>
         <p>実魚の実験パラメータによる物理モデル。トラップ入網・脱出、flash expansion。</p>
       </div>
@@ -194,7 +200,7 @@
         </g>
       </svg>
       <div class="body">
-        <h2>三宮×Boids 3D</h2>
+        <h2>三宮×Boids 3D<span class="status">⚙ 調整中</span></h2>
         <div class="tag">三宮 1993 の3D一般化 ／ Three.js</div>
         <p>魚礁（反発＋誘引）に群れが蝟集する。3ルール倍率・サメ・壁誘引の切替つき。</p>
       </div>
@@ -222,7 +228,7 @@
         <circle cx="160" cy="92" r="20" fill="none" stroke="#7c9aff" stroke-opacity="0.3" stroke-dasharray="3 4"/>
       </svg>
       <div class="body">
-        <h2>流体相互作用 再生ビューア</h2>
+        <h2>流体相互作用 再生ビューア<span class="status">🚧 開発中</span></h2>
         <div class="tag">Filella 2018系 ／ 計算結果の3D再生</div>
         <p>魚が作る流れが魚を動かすモデル。視覚＋流体だけで渦（ミリング）が創発。</p>
       </div>
