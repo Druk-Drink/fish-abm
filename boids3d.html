@@ -133,8 +133,21 @@ import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometr
 // ---- シーン ----
 const scene = new THREE.Scene();
 const deepWater = new THREE.Color(0x0b4657);
+const waterPalette = {
+  deepWater: { value: deepWater },
+  shallowWater: { value: new THREE.Color(0x40a9a4) },
+};
+const waterColorGLSL = `
+  uniform vec3 deepWater;
+  uniform vec3 shallowWater;
+
+  vec3 waterColor(vec3 direction) {
+    float surface = smoothstep(-0.19, 0.38, direction.y);
+    return mix(deepWater, shallowWater, surface);
+  }
+`;
 scene.background = deepWater;
-scene.fog = new THREE.Fog(deepWater, 105, 305);
+scene.fog = new THREE.Fog(deepWater, 105, 330);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
 camera.position.set(93, 61, 117);
@@ -158,10 +171,7 @@ const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.S
   side: THREE.BackSide,
   depthTest: false,
   depthWrite: false,
-  uniforms: {
-    deepWater: { value: deepWater },
-    shallowWater: { value: new THREE.Color(0x40a9a4) },
-  },
+  uniforms: waterPalette,
   vertexShader: `
     varying vec3 waterDirection;
     void main() {
@@ -170,15 +180,11 @@ const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.S
       gl_Position = clip.xyww;
     }
   `,
-  fragmentShader: `
+  fragmentShader: waterColorGLSL + `
     varying vec3 waterDirection;
-    uniform vec3 deepWater;
-    uniform vec3 shallowWater;
 
     void main() {
-      vec3 direction = normalize(waterDirection);
-      float surface = smoothstep(-0.19, 0.38, direction.y);
-      gl_FragColor = vec4(mix(deepWater, shallowWater, surface), 1.0);
+      gl_FragColor = vec4(waterColor(normalize(waterDirection)), 1.0);
       #include <colorspace_fragment>
     }
   `,
@@ -195,49 +201,60 @@ const boundsGeo = new THREE.BoxGeometry(BOUNDS.x * 2, BOUNDS.y * 2, BOUNDS.z * 2
 
 const boundsBox = new THREE.LineSegments(
   new THREE.EdgesGeometry(boundsGeo),
-  new THREE.LineBasicMaterial({ color: 0xb2eee5, transparent: true, opacity: 0.33 })
+  new THREE.LineBasicMaterial({ color: 0xb2eee5, transparent: true, opacity: 0.24 })
 );
 scene.add(boundsBox);
 
-// 内壁：BackSide 描画なので視界を遮らず、奥の壁だけがうっすら見える
-const walls = new THREE.Mesh(
-  boundsGeo,
-  new THREE.MeshBasicMaterial({
-    color: 0xbdf9ea, transparent: true, opacity: 0.03,
-    side: THREE.BackSide, depthWrite: false,
-  })
-);
-scene.add(walls);
-
 // ---- 海底の景観 ----
+function seabedY(x, z) {
+  const shelf = THREE.MathUtils.smoothstep(Math.hypot(x, z), 82, 202);
+  const banks = 1.38 * Math.sin(0.047 * x + 0.023 * z) * Math.cos(0.034 * z - 0.014 * x);
+  const ripples = 0.54 * Math.sin(0.093 * x - 0.073 * z) * Math.cos(0.071 * z + 0.03 * x);
+  return SAND_Y + (banks + ripples) * (1 + shelf * 3.2) - shelf * 16;
+}
+
 const sandMat = new THREE.MeshStandardMaterial({ color: 0xc6b38a, roughness: 1 });
 sandMat.onBeforeCompile = shader => {
-  shader.vertexShader = "varying vec2 sandPosition;\n" + shader.vertexShader.replace(
+  Object.assign(shader.uniforms, waterPalette);
+  shader.vertexShader = "varying vec3 sandPosition;\n" + shader.vertexShader.replace(
     "#include <begin_vertex>",
-    "#include <begin_vertex>\nsandPosition = (modelMatrix * vec4(position, 1.0)).xz;"
+    "#include <begin_vertex>\nsandPosition = (modelMatrix * vec4(position, 1.0)).xyz;"
   );
-  shader.fragmentShader = `
-    varying vec2 sandPosition;
+  shader.fragmentShader = waterColorGLSL + `
+    varying vec3 sandPosition;
     float grain(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
     }
   ` + shader.fragmentShader.replace("#include <color_fragment>", `
     #include <color_fragment>
-    vec2 q = sandPosition;
+    vec2 q = sandPosition.xz;
     float ripple = sin(dot(q, vec2(0.45, 1.1)) + 1.7 * sin(q.x * 0.18 + q.y * 0.11));
     float fineDetail = 1.0 - smoothstep(0.2, 0.9, length(fwidth(q)));
     float speckle = grain(floor(q * 8.0)) - 0.5;
-    float patches = sin(q.x * 0.10 - q.y * 0.14) * cos(q.x * 0.07 + q.y * 0.25);
-    diffuseColor.rgb *= 0.92 + 0.12 * patches + (0.085 * ripple + 0.18 * speckle) * fineDetail;
+    float patches = sin(q.x * 0.07 - q.y * 0.062) * cos(q.x * 0.044 + q.y * 0.091);
+    vec3 sandTint = mix(vec3(0.78, 0.84, 0.85), vec3(1.04, 1.01, 0.95), 0.5 + 0.5 * patches);
+    diffuseColor.rgb *= sandTint * (0.92 + (0.075 * ripple + 0.18 * speckle) * fineDetail);
+  `).replace("#include <fog_fragment>", `
+    #ifdef USE_FOG
+      // 遠い海底を、同じ視線方向の背景色へ溶け込ませる。
+      vec3 horizon = waterColor(normalize(sandPosition - cameraPosition));
+      float haze = smoothstep(fogNear, fogFar, vFogDepth);
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, linearToOutputTexel(vec4(horizon, 1.0)).rgb, haze);
+    #endif
   `);
 };
-const sand = new THREE.Mesh(
-  new THREE.CircleGeometry(BOUNDS.x * 6, 64),
-  sandMat
-);
-sand.rotation.x = -Math.PI / 2;
-sand.position.y = SAND_Y;
-scene.add(sand);
+const seabedGeometry = new THREE.PlaneGeometry(2, 2, 192, 192);
+seabedGeometry.rotateX(-Math.PI / 2);
+const seabedVertices = seabedGeometry.getAttribute("position");
+// 魚や岩に近い中央は細かく、霞に隠れる遠景は粗い間隔で分割する。
+const seabedAxis = u => 184 * u + 396 * u * Math.pow(u, 4);
+for (let i = 0; i < seabedVertices.count; i++) {
+  const x = seabedAxis(seabedVertices.getX(i));
+  const z = seabedAxis(seabedVertices.getZ(i));
+  seabedVertices.setXYZ(i, x, seabedY(x, z), z);
+}
+seabedGeometry.computeVertexNormals();
+scene.add(new THREE.Mesh(seabedGeometry, sandMat));
 
 // カメラを開き直しても岩礁や海藻は同じ場所に生える。
 let habitatSeed = 86241;
@@ -257,6 +274,10 @@ function createReefRock(x, z, width, height, depth) {
   const stone = new THREE.Color(0x777668);
   const algae = new THREE.Color(0x506144);
   const phase = habitatRandom() * Math.PI * 2;
+  const rootY = seabedY(x, z);
+  const angle = phase * 1.3;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
   for (let i = 0; i < vertices.count; i++) {
     const vx = vertices.getX(i);
     const vy = vertices.getY(i);
@@ -269,64 +290,131 @@ function createReefRock(x, z, width, height, depth) {
     color.copy(stone).lerp(algae, cover)
       .multiplyScalar(0.73 + 0.22 * vy + 0.16 * folds + 0.12 * stratum + 0.09 * grain);
     color.toArray(colors, i * 3);
-    vertices.setXYZ(
-      i,
-      x + (vx * radius + 0.15 * vy) * width,
-      SAND_Y + (0.30 + vy * radius) * height,
-      z + vz * radius * depth
-    );
+    const localX = (vx * radius + 0.15 * vy) * width;
+    const localZ = vz * radius * depth;
+    vertices.setXYZ(i, x + localX * cos - localZ * sin,
+      rootY + (0.18 + vy * radius) * height, z + localX * sin + localZ * cos);
   }
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
   return geometry;
 }
 
-const reefPatches = [
-  { x: 41, z: 6, size: 12, plants: 12 },
-  { x: -23, z: 35, size: 10, plants: 11 },
-  { x: -47, z: -14, size: 13, plants: 12 },
-  { x: 11, z: -45, size: 11, plants: 10 },
-  { x: -38, z: -49, size: 7, plants: 6 },
+const reefRegions = [
+  [
+    { x: 41, z: 6, size: 12, plants: 12 },
+    { x: -23, z: 35, size: 10, plants: 11 },
+    { x: -47, z: -14, size: 13, plants: 12 },
+    { x: 11, z: -45, size: 11, plants: 10 },
+    { x: -38, z: -49, size: 7, plants: 6 },
+  ],
+  [
+    { x: 100, z: 28, size: 23, plants: 10, shape: 0.74 },
+    { x: 94, z: -42, size: 20, plants: 9, shape: 1.35 },
+    { x: 151, z: -34, size: 28, plants: 5, shape: 1.12 },
+    { x: 131, z: 87, size: 16, plants: 5, shape: 0.90 },
+  ],
+  [
+    { x: 27, z: 95, size: 14, plants: 9, shape: 0.67 },
+    { x: -33, z: 91, size: 21, plants: 11, shape: 0.86 },
+    { x: -86, z: 129, size: 26, plants: 7, shape: 1.1 },
+    { x: 49, z: 165, size: 29, plants: 6, shape: 0.78 },
+  ],
+  [
+    { x: -97, z: 25, size: 22, plants: 8, shape: 0.85 },
+    { x: -101, z: -37, size: 24, plants: 7, shape: 1.25 },
+    { x: -157, z: 5, size: 28, plants: 5, shape: 1.15 },
+  ],
+  [
+    { x: 48, z: -91, size: 19, plants: 9, shape: 0.8 },
+    { x: -21, z: -99, size: 21, plants: 8, shape: 0.9 },
+    { x: -77, z: -141, size: 30, plants: 7, shape: 1.3 },
+    { x: 42, z: -154, size: 25, plants: 5, shape: 1.1 },
+  ],
 ];
 
-function addReef() {
+const rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96 });
+rockMat.onBeforeCompile = shader => {
+  shader.vertexShader = "varying vec3 rockPosition;\n" + shader.vertexShader.replace(
+    "#include <begin_vertex>", "#include <begin_vertex>\nrockPosition = position;"
+  );
+  shader.fragmentShader = `
+    varying vec3 rockPosition;
+    float rockGrain(vec3 cell) {
+      vec3 p = fract(cell * vec3(0.1031, 0.11369, 0.13787));
+      p += dot(p, p.yzx + 19.19);
+      return fract((p.x + p.y) * p.z);
+    }
+    float rockNoise(vec3 point) {
+      vec3 cell = floor(point);
+      vec3 f = smoothstep(0.0, 1.0, fract(point));
+      float bottom = mix(
+        mix(rockGrain(cell), rockGrain(cell + vec3(1, 0, 0)), f.x),
+        mix(rockGrain(cell + vec3(0, 0, 1)), rockGrain(cell + vec3(1, 0, 1)), f.x), f.z
+      );
+      float top = mix(
+        mix(rockGrain(cell + vec3(0, 1, 0)), rockGrain(cell + vec3(1, 1, 0)), f.x),
+        mix(rockGrain(cell + vec3(0, 1, 1)), rockGrain(cell + vec3(1, 1, 1)), f.x), f.z
+      );
+      return mix(bottom, top, f.y);
+    }
+  ` + shader.fragmentShader.replace("#include <color_fragment>", `
+    #include <color_fragment>
+    vec3 p = rockPosition;
+    float mottling = rockNoise(p * vec3(0.34, 0.57, 0.34));
+    float detail = 1.0 - smoothstep(0.30, 1.65, length(fwidth(p)));
+    float mineralGrain = rockNoise(p * 2.1) - 0.5;
+    float layers = sin(dot(p, vec3(0.15, 1.13, 0.11)) + 5.4 * mottling);
+    diffuseColor.rgb *= 0.79 + 0.43 * mottling + detail * (0.10 * layers + 0.31 * mineralGrain);
+    diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.17, 1.11, 0.84),
+      0.55 * smoothstep(0.54, 0.77, mottling));
+  `);
+};
+
+const shadowMat = new THREE.MeshBasicMaterial({ color: 0x182923, transparent: true, depthWrite: false });
+shadowMat.onBeforeCompile = shader => {
+  shader.vertexShader = "varying vec2 shadowUv;\n" + shader.vertexShader.replace(
+    "#include <begin_vertex>", "#include <begin_vertex>\nshadowUv = uv;"
+  );
+  shader.fragmentShader = "varying vec2 shadowUv;\n" + shader.fragmentShader.replace(
+    "#include <color_fragment>",
+    "#include <color_fragment>\ndiffuseColor.a *= 0.38 * (1.0 - smoothstep(0.1, 0.5, length(shadowUv - 0.5)));"
+  );
+};
+
+function addReef(patches) {
   const rocks = [];
   const shadows = [];
-  for (const { x, z, size } of reefPatches) {
-    for (let i = 0; i < 25; i++) {
+  for (const { x, z, size, shape = 1 } of patches) {
+    const rockCount = size < 16 ? 25 : 19;
+    for (let i = 0; i < rockCount; i++) {
       const angle = habitatRandom() * Math.PI * 2;
       const distance = size * (0.45 + habitatRandom() * 1.4);
       const radius = i < 13 ? size * (0.12 + habitatRandom() * 0.56) : 0.3 + habitatRandom() * 1.6;
       const rockX = i === 0 ? x : x + Math.cos(angle) * distance;
       const rockZ = i === 0 ? z : z + Math.sin(angle) * distance;
       const width = i === 0 ? size : radius;
-      const depth = width * (0.65 + habitatRandom() * 0.52);
-      rocks.push(createReefRock(rockX, rockZ, width, width * (0.46 + 0.49 * habitatRandom()), depth));
-      const shadow = new THREE.PlaneGeometry(width * 2.9, depth * 2.9);
-      shadow.rotateX(-Math.PI / 2).translate(rockX, SAND_Y + 0.025, rockZ);
+      const depth = width * (0.55 + habitatRandom() * 0.52);
+      const rockHeight = width * (0.46 + 0.49 * habitatRandom()) * shape;
+      rocks.push(createReefRock(rockX, rockZ, width, rockHeight, depth));
+
+      const shadowSize = 2.7 * (width + depth) / 2;
+      const divisions = Math.ceil(width / 4);
+      const shadow = new THREE.PlaneGeometry(shadowSize, shadowSize, divisions, divisions);
+      shadow.rotateX(-Math.PI / 2).translate(rockX, 0, rockZ);
+      const vertices = shadow.getAttribute("position");
+      for (let j = 0; j < vertices.count; j++) {
+        vertices.setY(j, seabedY(vertices.getX(j), vertices.getZ(j)) + 0.09);
+      }
       shadows.push(shadow);
     }
   }
 
-  scene.add(new THREE.Mesh(
-    mergeGeometries(rocks),
-    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96 })
-  ));
-  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x182923, transparent: true, depthWrite: false });
-  shadowMat.onBeforeCompile = shader => {
-    shader.vertexShader = "varying vec2 shadowUv;\n" + shader.vertexShader.replace(
-      "#include <begin_vertex>", "#include <begin_vertex>\nshadowUv = uv;"
-    );
-    shader.fragmentShader = "varying vec2 shadowUv;\n" + shader.fragmentShader.replace(
-      "#include <color_fragment>",
-      "#include <color_fragment>\ndiffuseColor.a *= 0.45 * (1.0 - smoothstep(0.1, 0.5, length(shadowUv - 0.5)));"
-    );
-  };
+  scene.add(new THREE.Mesh(mergeGeometries(rocks), rockMat));
   scene.add(new THREE.Mesh(mergeGeometries(shadows), shadowMat));
 }
-addReef();
 
-function createKelpGeometry() {
+function createKelpGeometry(patches) {
   const positions = [];
   const colors = [];
   const bends = [];
@@ -335,13 +423,14 @@ function createKelpGeometry() {
   const light = new THREE.Color();
   const color = new THREE.Color();
 
-  for (const { x, z, size, plants } of reefPatches) {
+  for (const { x, z, size, plants } of patches) {
     for (let plant = 0; plant < plants; plant++) {
       const azimuth = habitatRandom() * Math.PI * 2;
       const distance = size * (0.7 + 0.87 * habitatRandom());
       const rootX = x + Math.cos(azimuth) * distance;
       const rootZ = z + Math.sin(azimuth) * distance;
-      const height = 7 + 21 * Math.pow(habitatRandom(), 1.3);
+      const rootY = seabedY(rootX, rootZ) - 0.13;
+      const height = 6 + Math.min(22, size * 1.55) * Math.pow(habitatRandom(), 1.3);
       const angle = habitatRandom() * Math.PI * 2;
       const green = habitatRandom() > 0.42;
       dark.set(green ? 0x344c26 : 0x4b4227);
@@ -365,7 +454,7 @@ function createKelpGeometry() {
             const u = (column - 2) / 2;
             const curl = (u * u * Math.sin(t * 24 + u * 2) * fold - (1 - u * u) * 0.18) * width;
             const vertex = point.clone().addScaledVector(side, u * width).addScaledVector(normal, curl);
-            positions.push(rootX + vertex.x, SAND_Y + vertex.y, rootZ + vertex.z);
+            positions.push(rootX + vertex.x, rootY + vertex.y, rootZ + vertex.z);
             bends.push(rootX, rootZ, Math.max(0, vertex.y));
             color.copy(dark).lerp(light, 0.22 + 0.48 * t + 0.23 * Math.abs(u) + 0.06 * Math.sin(t * 24));
             color.toArray(colors, colors.length);
@@ -407,6 +496,59 @@ function createKelpGeometry() {
   return geometry;
 }
 
+function createSeagrassGeometry(patches) {
+  const positions = [];
+  const colors = [];
+  const bends = [];
+  const indices = [];
+  const rootColor = new THREE.Color(0x294533);
+  const tipColor = new THREE.Color(0x708d4d);
+  const color = new THREE.Color();
+  const sections = 7;
+  for (const { x, z, size } of patches) {
+    for (let tuft = 0; tuft < 5; tuft++) {
+      const bearing = habitatRandom() * Math.PI * 2;
+      const distance = size * (0.93 + 0.9 * habitatRandom());
+      const tuftX = x + Math.cos(bearing) * distance;
+      const tuftZ = z + Math.sin(bearing) * distance;
+      for (let blade = 0; blade < 10; blade++) {
+        const azimuth = habitatRandom() * Math.PI * 2;
+        const alongX = Math.cos(azimuth);
+        const alongZ = Math.sin(azimuth);
+        const rootX = tuftX + (habitatRandom() - 0.5) * 4;
+        const rootZ = tuftZ + (habitatRandom() - 0.5) * 4;
+        const rootY = seabedY(rootX, rootZ) - 0.13;
+        const length = 1.4 + habitatRandom() * 3.4;
+        const first = positions.length / 3;
+        for (let step = 0; step <= sections; step++) {
+          const t = step / sections;
+          const reach = length * 0.53 * t * t;
+          const height = length * Math.sin(t * 1.32);
+          const width = (0.17 + 0.13 * Math.sin(Math.PI * t)) * (1 - 0.94 * t);
+          color.copy(rootColor).lerp(tipColor, 0.18 + 0.64 * t);
+          for (const side of [-1, 1]) {
+            positions.push(rootX + alongX * reach - alongZ * width * side,
+              rootY + height, rootZ + alongZ * reach + alongX * width * side);
+            bends.push(rootX, rootZ, height * 1.45);
+            color.toArray(colors, colors.length);
+          }
+          if (step > 0) {
+            const i = first + step * 2;
+            indices.push(i - 2, i, i + 1, i - 2, i + 1, i - 1);
+          }
+        }
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute("kelpBend", new THREE.Float32BufferAttribute(bends, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 const habitatTime = { value: 0 };
 const kelpMat = new THREE.MeshStandardMaterial({
   vertexColors: true, side: THREE.DoubleSide, roughness: 0.72,
@@ -426,7 +568,14 @@ kelpMat.onBeforeCompile = shader => {
     transformed.z += bend * 0.64 * sin(habitatTime + swell + 1.25);
   `);
 };
-scene.add(new THREE.Mesh(createKelpGeometry(), kelpMat));
+for (const patches of reefRegions) {
+  addReef(patches);
+  const kelp = createKelpGeometry(patches);
+  scene.add(new THREE.Mesh(kelp, kelpMat));
+}
+for (const patches of reefRegions) {
+  scene.add(new THREE.Mesh(createSeagrassGeometry(patches), kelpMat));
+}
 
 window.addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
