@@ -527,47 +527,235 @@ document.getElementById("clearObstacles").addEventListener("click", () => {
 // ---- Boid（InstancedMesh で描画） ----
 const MAX_BOIDS = 1000;
 
-// 魚の種類ごとの形状パラメータ（body: 胴体の[幅,高さ,長さ]スケール）
 const FISH_TYPES = {
-  default:  { color: 0x8fd3ff, body: [0.38, 0.62, 1.35], tailR: 0.85, tailH: 1.1, tailZ: -1.75, finH: 0.6 },
-  aji:      { color: 0xc9d9e4, body: [0.30, 0.55, 1.55], tailR: 1.0,  tailH: 1.2, tailZ: -2.0,  finH: 0.5 },
-  kumanomi: { color: 0xff8c2e, body: [0.50, 0.72, 1.05], tailR: 0.7,  tailH: 0.9, tailZ: -1.4,  finH: 0.55 },
+  default:  { body: [0.37, 0.62, 1.62], tail: [1.10, 0.92, 0.57], back: 0x395e83, flank: 0x83c6d5, belly: 0xd1e2d8, fin: 0x669ab0, markings: 0 },
+  aji:      { body: [0.32, 0.54, 1.86], tail: [1.25, 1.03, 0.70], back: 0x3d6465, flank: 0xb2ccce, belly: 0xe1e8dc, fin: 0x8caa87, markings: 1 },
+  kumanomi: { body: [0.43, 0.70, 1.30], tail: [0.73, 0.67, 0.10], back: 0xae3e15, flank: 0xf57f27, belly: 0xfaa04b, fin: 0xc55b24, markings: 2 },
 };
 
-// 魚の形状（+Z が進行方向）：胴体・尾びれ・背びれを結合
-function buildFishGeometry(t = FISH_TYPES.default) {
-  // 胴体：球を細長く引き伸ばして側面をやや平らに
-  const body = new THREE.SphereGeometry(1, 12, 10);
-  body.scale(...t.body);
+// 尾柄から吻までの断面。各行は前後位置、幅、高さ、断面中心の高さ。
+const FISH_PROFILE = [
+  [-1, 0.19, 0.15, 0.02], [-0.87, 0.26, 0.20, 0.01], [-0.67, 0.58, 0.41, 0.02],
+  [-0.45, 0.82, 0.67, 0.03], [-0.20, 0.97, 0.91, 0.05], [0.06, 1, 1, 0.04],
+  [0.30, 0.99, 0.96, 0], [0.51, 0.91, 0.81, -0.03], [0.72, 0.73, 0.56, -0.06],
+  [0.90, 0.48, 0.28, -0.13], [0.99, 0.24, 0.12, -0.15], [1.02, 0.09, 0.045, -0.15],
+];
 
-  // 尾びれ：薄く平たいコーン。先端（付け根）を前方に向けて胴体後端へ
-  const tail = new THREE.ConeGeometry(t.tailR, t.tailH, 4);
-  tail.rotateX(Math.PI / 2);       // 先端を +Z へ
-  tail.rotateZ(Math.PI / 2);       // ひし形を縦向きに
-  tail.scale(0.12, 1.1, 1);        // 左右に薄く
-  tail.translate(0, 0, t.tailZ);
+function buildFishBody(type) {
+  const [width, height, length] = type.body;
+  const positions = [];
+  const colors = [];
+  const indices = [];
+  const sides = 20;
+  const back = new THREE.Color(type.back);
+  const flank = new THREE.Color(type.flank);
+  const belly = new THREE.Color(type.belly);
+  const color = new THREE.Color();
+  FISH_PROFILE.forEach(([z, w, h, centerY], ring) => {
+    for (let side = 0; side < sides; side++) {
+      const angle = side / sides * Math.PI * 2;
+      const y = Math.sin(angle);
+      positions.push(Math.cos(angle) * w * width, (centerY + y * h) * height, z * length);
+      color.copy(flank)
+        .lerp(back, Math.pow(Math.max(y, 0), 1.6))
+        .lerp(belly, Math.pow(Math.max(-y, 0), 1.55))
+        .multiplyScalar(0.91 + 0.09 * Math.cos(z * 2));
+      color.toArray(colors, colors.length);
+      const i = ring * sides + side;
+      const next = ring * sides + (side + 1) % sides;
+      if (ring > 0) indices.push(i - sides, next - sides, i, next - sides, next, i);
+      if (side > 0 && side < sides - 1) {
+        if (ring === 0) indices.push(0, next, i);
+        if (ring === FISH_PROFILE.length - 1) indices.push(ring * sides, i, next);
+      }
+    }
+  });
 
-  // 背びれ：小さな薄い三角
-  const fin = new THREE.ConeGeometry(0.45, t.finH, 4);
-  fin.scale(0.12, 1, 1);
-  fin.translate(0, t.body[1] + 0.13, -0.15);
-
-  return mergeGeometries([body, tail, fin]);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
-const boidGeo = buildFishGeometry();
-const boidMat = new THREE.MeshStandardMaterial({ color: 0x8fd3ff, roughness: 0.4 });
-const boidMesh = new THREE.InstancedMesh(boidGeo, boidMat, MAX_BOIDS);
+// 薄いヒレの外周と中心を結び、先端を暗くして筋の明暗をつける。
+function buildFishFin(center, outline, tint) {
+  const rim = outline.flatMap((point, i) => {
+    const next = outline[(i + 1) % outline.length];
+    return [0.16, 0.84].map(t => point.map((axis, j) => THREE.MathUtils.lerp(axis, next[j], t)));
+  });
+  const positions = [...center, ...rim.flat()];
+  const colors = [];
+  const indices = [];
+  const color = new THREE.Color(tint);
+  const shade = new THREE.Color();
+  shade.copy(color).multiplyScalar(0.88).toArray(colors, 0);
+  rim.forEach((_, i) => {
+    shade.copy(color).multiplyScalar(i % 2 === 0 ? 0.72 : 0.56).toArray(colors, colors.length);
+    indices.push(0, i + 1, (i + 1) % rim.length + 1);
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function buildFishEye(side, width, height, length) {
+  const eye = new THREE.SphereGeometry(1, 10, 6);
+  eye.rotateZ(-side * Math.PI / 2);
+  const vertices = eye.getAttribute("position");
+  const colors = new Float32Array(vertices.count * 3);
+  const pupil = new THREE.Color(0x07131a);
+  const iris = new THREE.Color(0xa99767);
+  const rim = new THREE.Color(0x203739);
+  const color = new THREE.Color();
+  for (let i = 0; i < vertices.count; i++) {
+    const facing = vertices.getX(i) * side;
+    color.copy(rim).lerp(iris, THREE.MathUtils.smoothstep(facing, 0.15, 0.48))
+      .lerp(pupil, THREE.MathUtils.smoothstep(facing, 0.63, 0.89));
+    color.toArray(colors, i * 3);
+  }
+  eye.deleteAttribute("uv");
+  eye.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  eye.scale(width * 0.27, height * 0.23, height * 0.25);
+  eye.translate(side * width * 0.75, height * 0.19, length * 0.67);
+  return eye;
+}
+
+const swimPhases = new THREE.InstancedBufferAttribute(new Float32Array(MAX_BOIDS), 1);
+swimPhases.setUsage(THREE.DynamicDrawUsage);
+
+function buildFishGeometry(type) {
+  const [w, h, l] = type.body;
+  const [tailLength, span, fork] = type.tail;
+  const tailRoot = -l + 0.09;
+  const body = buildFishBody(type);
+  const parts = [
+    body,
+    buildFishFin([0, 0, tailRoot - tailLength * 0.24], [
+      [0, h * 0.12, tailRoot], [0, span * 0.51, tailRoot - tailLength * 0.46],
+      [0, span, tailRoot - tailLength * 0.91], [0, span * 0.69, tailRoot - tailLength],
+      [0, 0, tailRoot - tailLength * (1 - fork)], [0, -span * 0.67, tailRoot - tailLength * 0.98],
+      [0, -span * 0.95, tailRoot - tailLength * 0.87], [0, -span * 0.47, tailRoot - tailLength * 0.43],
+      [0, -h * 0.10, tailRoot],
+    ], type.fin),
+    buildFishFin([0.026, h * 1.05, -l * 0.06], [
+      [0, h * 0.84, l * 0.39], [0, h * 1.30, l * 0.16], [0, h * 1.51, -l * 0.04],
+      [0, h * 1.30, -l * 0.34], [0, h * 0.48, -l * 0.65], [0, h * 0.56, -l * 0.38],
+    ], type.fin),
+    buildFishFin([0.019, -h * 0.68, -l * 0.40], [
+      [0, -h * 0.63, -l * 0.20], [0, -h * 0.94, -l * 0.39],
+      [0, -h * 0.80, -l * 0.55], [0, -h * 0.26, -l * 0.73],
+    ], type.fin),
+  ];
+  for (const side of [-1, 1]) {
+    parts.push(buildFishEye(side, w, h, l));
+    parts.push(buildFishFin([side * w * 1.09, -h * 0.37, l * 0.18], [
+      [side * w * 0.83, -h * 0.15, l * 0.47], [side * w * 1.39, -h * 0.58, l * 0.12],
+      [side * w * 1.49, -h * 0.86, -l * 0.30], [side * w * 1.16, -h * 0.58, -l * 0.05],
+      [side * w * 0.86, -h * 0.30, l * 0.40],
+    ], type.fin));
+  }
+
+  for (const part of parts) {
+    const marks = new Float32Array(part.getAttribute("position").count);
+    if (part === body) marks.fill(1);
+    part.setAttribute("fishSkin", new THREE.BufferAttribute(marks, 1));
+  }
+  const geometry = mergeGeometries(parts);
+  geometry.setAttribute("swimPhase", swimPhases);
+  return geometry;
+}
+
+const fishLength = { value: FISH_TYPES.default.body[2] };
+const fishHeight = { value: FISH_TYPES.default.body[1] };
+const fishMarkings = { value: FISH_TYPES.default.markings };
+const boidMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.39 });
+boidMat.onBeforeCompile = shader => {
+  Object.assign(shader.uniforms, { fishLength, fishHeight, fishMarkings });
+  shader.vertexShader = `
+    attribute float fishSkin;
+    attribute float swimPhase;
+    uniform float fishLength;
+    uniform float fishHeight;
+    varying vec3 skinPosition;
+    void swimBend(float z, out float displacement, out float slope) {
+      float tail = max(0.0, 0.23 - z / fishLength);
+      float phase = swimPhase + 2.9 * z / fishLength;
+      displacement = 0.13 * tail * tail * sin(phase);
+      slope = 0.13 * tail * (-2.0 * sin(phase) + 2.9 * tail * cos(phase)) / fishLength;
+    }
+  ` + shader.vertexShader.replace("#include <beginnormal_vertex>", `
+    #include <beginnormal_vertex>
+    float displacement;
+    float slope;
+    swimBend(position.z, displacement, slope);
+    objectNormal.z -= slope * objectNormal.x;
+  `).replace("#include <begin_vertex>", `
+    #include <begin_vertex>
+    transformed.x += displacement;
+    skinPosition = vec3(position.y / fishHeight, position.z / fishLength, fishSkin);
+  `);
+  shader.fragmentShader = `
+    uniform float fishMarkings;
+    varying vec3 skinPosition;
+    float stripe(float distance, float halfWidth) {
+      float edge = max(fwidth(distance), 0.002);
+      return 1.0 - smoothstep(halfWidth - edge, halfWidth + edge, abs(distance));
+    }
+  ` + shader.fragmentShader.replace("#include <color_fragment>", `
+    #include <color_fragment>
+    float y = skinPosition.x;
+    float z = skinPosition.y;
+    vec3 skinColor = diffuseColor.rgb;
+    if (fishMarkings > 1.5) {
+      float head = z - (0.49 + 0.095 * y);
+      float middle = z - (-0.16 + 0.18 * (1.0 - y * y) + 0.08 * y);
+      float tail = z - (-0.86 + 0.07 * y * y);
+      float edge = max(stripe(head, 0.12), max(stripe(middle, 0.17), stripe(tail, 0.085)));
+      float white = max(stripe(head, 0.085), max(stripe(middle, 0.125), stripe(tail, 0.057)));
+      skinColor = mix(skinColor, vec3(0.022, 0.015, 0.012), edge);
+      skinColor = mix(skinColor, vec3(0.76, 0.82, 0.75), white);
+    } else if (fishMarkings > 0.5) {
+      float lateral = stripe(y - (0.03 + 0.18 * exp(-6.0 * z * z)), 0.048);
+      skinColor = mix(skinColor, vec3(0.46, 0.39, 0.13), lateral * (1.0 - smoothstep(0.25, 0.57, z)) * 0.57);
+    }
+    float gill = stripe(z - (0.48 - 0.26 * (1.0 - y * y)), 0.018);
+    float mouth = stripe(y + 0.14 - (z - 0.85) * 0.09, 0.023) * smoothstep(0.84, 0.99, z);
+    float gillShade = 0.28 * gill * (1.0 - smoothstep(0.48, 0.79, abs(y)));
+    skinColor *= 1.0 - gillShade - 0.35 * mouth;
+
+    vec2 scales = vec2(z * 21.0, y * 11.0);
+    float scaleFade = 1.0 - smoothstep(0.26, 0.88, length(fwidth(scales)));
+    float scaleRim = cos(6.283 * (scales.x + 0.18 * cos(6.283 * scales.y)));
+    float scaleArea = 1.0 - smoothstep(-0.32, 0.56, z);
+    skinColor *= 1.0 + 0.075 * scaleRim * scaleFade * scaleArea;
+    diffuseColor.rgb = mix(diffuseColor.rgb, skinColor, skinPosition.z);
+  `).replace("#include <emissivemap_fragment>", `
+    #include <emissivemap_fragment>
+    // 水中の散乱光で側面の色が陰でも見えるようにする。
+    float fill = 0.14 + 0.12 * skinPosition.z * (1.0 - smoothstep(0.20, 0.84, abs(skinPosition.x)));
+    totalEmissiveRadiance += diffuseColor.rgb * fill;
+  `);
+};
+
+const boidMesh = new THREE.InstancedMesh(buildFishGeometry(FISH_TYPES.default), boidMat, MAX_BOIDS);
 boidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+boidMesh.frustumCulled = false;
 scene.add(boidMesh);
 
-// 魚の種類切替：ジオメトリを差し替え、色を変更（InstancedMeshはそのまま）
 document.getElementById("fishType").addEventListener("change", e => {
-  const t = FISH_TYPES[e.target.value];
+  const type = FISH_TYPES[e.target.value];
   const old = boidMesh.geometry;
-  boidMesh.geometry = buildFishGeometry(t);
+  boidMesh.geometry = buildFishGeometry(type);
+  old.deleteAttribute("swimPhase");
   old.dispose();
-  boidMat.color.set(t.color);
+  fishLength.value = type.body[2];
+  fishHeight.value = type.body[1];
+  fishMarkings.value = type.markings;
 });
 
 // ---- 捕食者 ----
@@ -674,6 +862,7 @@ class Boid {
     );
     this.vel = new THREE.Vector3().randomDirection().multiplyScalar(params.maxSpeed * 0.7);
     this.acc = new THREE.Vector3();
+    this.swimPhase = Math.random() * Math.PI * 2;
   }
 }
 
@@ -878,7 +1067,7 @@ const _lookTarget = new THREE.Vector3();
 const _lookMat = new THREE.Matrix4();
 const _scale = new THREE.Vector3(1, 1, 1);
 
-function draw() {
+function draw(deltaTime) {
   for (let i = 0; i < boids.length; i++) {
     const b = boids[i];
     _lookTarget.copy(b.pos).add(b.vel);
@@ -888,8 +1077,13 @@ function draw() {
     _quat.setFromRotationMatrix(_lookMat);
     _mat.compose(b.pos, _quat, _scale);
     boidMesh.setMatrixAt(i, _mat);
+    const speed = b.vel.length();
+    const strokesPerSecond = 1.35 + 2.05 * speed / (speed + 0.55);
+    b.swimPhase = (b.swimPhase + deltaTime * strokesPerSecond * Math.PI * 2) % (Math.PI * 2);
+    swimPhases.setX(i, b.swimPhase);
   }
   boidMesh.instanceMatrix.needsUpdate = true;
+  swimPhases.needsUpdate = true;
 
   if (predator) {
     predatorMesh.position.copy(predator.pos);
@@ -900,10 +1094,13 @@ function draw() {
 }
 
 const habitatStart = performance.now();
+let lastFrame = habitatStart;
 function loop(now) {
+  const deltaTime = Math.max(0, Math.min((now - lastFrame) * 0.001, 0.05));
+  lastFrame = now;
   habitatTime.value = (now - habitatStart) * 0.001;
   update();
-  draw();
+  draw(deltaTime);
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
