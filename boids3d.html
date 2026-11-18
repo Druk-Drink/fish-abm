@@ -6,35 +6,39 @@
 <title>Boids 3D シミュレーション</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1020; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b4657; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; }
   #panel {
+    --panel-border: rgba(139, 223, 209, 0.32);
+    --panel-control: rgba(30, 99, 103, 0.48);
     position: fixed; top: 12px; left: 12px;
-    background: rgba(15, 22, 45, 0.88); color: #dbe4ff;
-    border: 1px solid rgba(120, 150, 255, 0.25); border-radius: 10px;
+    background: rgba(8, 38, 48, 0.91); color: #e2f4ef;
+    border: 1px solid var(--panel-border); border-radius: 10px;
     padding: 14px 16px; font-size: 13px; width: 250px;
     backdrop-filter: blur(6px); user-select: none; z-index: 10;
     max-height: calc(100% - 24px); overflow-y: auto;
   }
-  #panel h1 { font-size: 15px; margin-bottom: 10px; color: #9db4ff; }
+  #panel h1 { font-size: 15px; margin-bottom: 10px; color: #a0e9d8; }
   .rule { margin-bottom: 10px; }
   .rule-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-  .rule-head input[type=checkbox] { accent-color: #6c8cff; }
+  #panel input { accent-color: #76d8c7; }
   .rule-head label { cursor: pointer; }
-  input[type=range] { width: 100%; accent-color: #6c8cff; }
+  input[type=range] { width: 100%; }
   .row { display: flex; justify-content: space-between; margin: 8px 0 2px; }
-  .val { color: #8fa3d9; font-variant-numeric: tabular-nums; }
+  .val { color: #a4d5cb; font-variant-numeric: tabular-nums; }
+  #panel :is(button, select) {
+    border: 1px solid var(--panel-border); background: var(--panel-control);
+    color: inherit; font-size: 13px;
+  }
   button {
     width: 100%; margin-top: 8px; padding: 6px; border-radius: 6px;
-    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
-    color: #dbe4ff; cursor: pointer; font-size: 13px;
+    cursor: pointer;
   }
-  button:hover { background: rgba(90, 115, 210, 0.45); }
+  #panel button:hover { background: rgba(53, 135, 128, 0.62); }
   select {
     width: 100%; margin-top: 2px; padding: 4px; border-radius: 6px;
-    border: 1px solid rgba(120, 150, 255, 0.35); background: rgba(60, 80, 160, 0.35);
-    color: #dbe4ff; font-size: 13px;
+    color-scheme: dark;
   }
-  #hint { margin-top: 10px; font-size: 11px; color: #7284b3; line-height: 1.5; }
+  #hint { margin-top: 10px; font-size: 11px; color: #a6c5c2; line-height: 1.5; }
 </style>
 <script type="importmap">
 {
@@ -128,8 +132,9 @@ import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometr
 
 // ---- シーン ----
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x102e43);
-scene.fog = new THREE.Fog(0x102e43, 95, 330);
+const deepWater = new THREE.Color(0x0b4657);
+scene.background = deepWater;
+scene.fog = new THREE.Fog(deepWater, 105, 305);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
 camera.position.set(93, 61, 117);
@@ -143,10 +148,70 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, -9, 0);
 
-scene.add(new THREE.HemisphereLight(0xc9edff, 0x506276, 1.05));
-const dirLight = new THREE.DirectionalLight(0xe2fff3, 1.55);
-dirLight.position.set(-45, 100, -25);
+scene.add(new THREE.HemisphereLight(0xc8f6f2, 0x53777a, 1.2));
+const sunDirection = new THREE.Vector3(-0.78, 0.48, -0.56).normalize();
+const dirLight = new THREE.DirectionalLight(0xfff4d7, 1.7);
+dirLight.position.copy(sunDirection).multiplyScalar(100);
 scene.add(dirLight);
+
+// 海の色と光をワールド座標の方向から求め、視点回転に追従させる。
+const habitatTime = { value: 0 };
+const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.ShaderMaterial({
+  side: THREE.BackSide,
+  depthTest: false,
+  depthWrite: false,
+  uniforms: {
+    deepWater: { value: deepWater },
+    shallowWater: { value: new THREE.Color(0x40a9a4) },
+    sunlight: { value: new THREE.Color(0xc4fff1) },
+    sunDirection: { value: sunDirection },
+    habitatTime,
+  },
+  vertexShader: `
+    varying vec3 waterDirection;
+    void main() {
+      waterDirection = position;
+      vec4 clip = projectionMatrix * vec4(mat3(viewMatrix) * position, 1.0);
+      gl_Position = clip.xyww;
+    }
+  `,
+  fragmentShader: `
+    varying vec3 waterDirection;
+    uniform vec3 deepWater;
+    uniform vec3 shallowWater;
+    uniform vec3 sunlight;
+    uniform vec3 sunDirection;
+    uniform float habitatTime;
+
+    void main() {
+      vec3 direction = normalize(waterDirection);
+      float surface = smoothstep(-0.19, 0.46, direction.y);
+      vec3 color = mix(deepWater, shallowWater, surface);
+      float towardSun = max(0.0, dot(direction, sunDirection));
+      float glow = pow(towardSun, 8.0) * smoothstep(-0.24, 0.42, direction.y);
+      color += sunlight * glow * 0.46;
+
+      vec3 right = normalize(cross(sunDirection, vec3(0.0, 1.0, 0.0)));
+      vec3 up = cross(right, sunDirection);
+      float drop = max(0.0, -dot(direction, up));
+      float fan = dot(direction, right) / (0.12 + 0.82 * drop);
+      float time = habitatTime * 0.28;
+      float ripples = sin(29.0 * fan + time + 0.7 * sin(9.0 * fan - time * 0.6));
+      float shafts = smoothstep(0.24, 1.0, ripples);
+      float spread = 1.0 - smoothstep(0.12, 0.68, abs(fan));
+      float fade = smoothstep(0.0, 0.11, drop) * (1.0 - smoothstep(0.27, 0.68, drop));
+      fade *= smoothstep(-0.19, 0.10, direction.y);
+      float strength = shafts * spread * fade * smoothstep(0.62, 0.95, towardSun);
+      color += sunlight * strength * 0.18;
+
+      gl_FragColor = vec4(color, 1.0);
+      #include <colorspace_fragment>
+    }
+  `,
+}));
+waterBackdrop.frustumCulled = false;
+waterBackdrop.renderOrder = -1;
+scene.add(waterBackdrop);
 
 // 遊泳領域（水槽風の箱）
 const BOUNDS = new THREE.Vector3(70, 45, 70); // 半サイズ
@@ -156,7 +221,7 @@ const boundsGeo = new THREE.BoxGeometry(BOUNDS.x * 2, BOUNDS.y * 2, BOUNDS.z * 2
 
 const boundsBox = new THREE.LineSegments(
   new THREE.EdgesGeometry(boundsGeo),
-  new THREE.LineBasicMaterial({ color: 0xc3e8f6, transparent: true, opacity: 0.36 })
+  new THREE.LineBasicMaterial({ color: 0xb2eee5, transparent: true, opacity: 0.33 })
 );
 scene.add(boundsBox);
 
@@ -164,15 +229,14 @@ scene.add(boundsBox);
 const walls = new THREE.Mesh(
   boundsGeo,
   new THREE.MeshBasicMaterial({
-    color: 0xbdf3ff, transparent: true, opacity: 0.035,
+    color: 0xbdf9ea, transparent: true, opacity: 0.03,
     side: THREE.BackSide, depthWrite: false,
   })
 );
 scene.add(walls);
 
 // ---- 海底の景観 ----
-const habitatTime = { value: 0 };
-const sandMat = new THREE.MeshStandardMaterial({ color: 0xa99b7e, roughness: 1 });
+const sandMat = new THREE.MeshStandardMaterial({ color: 0xc6b38a, roughness: 1 });
 sandMat.onBeforeCompile = shader => {
   shader.uniforms.habitatTime = habitatTime;
   shader.vertexShader = "varying vec2 sandPosition;\n" + shader.vertexShader.replace(
@@ -195,18 +259,20 @@ sandMat.onBeforeCompile = shader => {
     diffuseColor.rgb *= 0.92 + 0.12 * patches + (0.085 * ripple + 0.18 * speckle) * fineDetail;
 
     // 水面で屈折した光が砂に作る模様
-    vec2 p = q * 0.18;
+    vec2 p = q * 0.22;
     float t = habitatTime * 0.48;
-    float waveA = abs(sin(p.x + p.y * 0.18 + 0.88 * sin(p.y + t)));
-    float waveB = abs(sin(p.y - p.x * 0.32 + 0.81 * sin(p.x - t * 0.8)));
-    float light = 1.0 - smoothstep(0.02, 0.20, min(waveA, waveB));
-    float dapple = 0.38 + 0.38 * cos(p.x * 0.4 + p.y * 0.21 + t)
+    vec2 distortion = 1.05 * sin(vec2(p.y * 0.61 + p.x * 0.36 + t, p.x * 0.72 - p.y * 0.31 - t));
+    float waveA = abs(sin(p.x + p.y * 0.18 + distortion.x + 0.55 * sin(p.y + t)));
+    float waveB = abs(sin(p.y - p.x * 0.32 + distortion.y + 0.57 * sin(p.x - t * 0.8)));
+    float light = 1.0 - smoothstep(0.015, 0.18, min(waveA, waveB));
+    float dapple = 0.30 + 0.30 * cos(p.x * 0.4 + p.y * 0.21 + t)
       * sin(p.y * 0.66 - p.x * 0.25 - t * 0.7);
-    diffuseColor.rgb += vec3(0.047, 0.099, 0.111) * light * dapple;
+    float causticsDetail = 1.0 - smoothstep(0.22, 0.76, length(fwidth(p)));
+    diffuseColor.rgb += vec3(0.14, 0.19, 0.15) * light * dapple * causticsDetail;
   `);
 };
 const sand = new THREE.Mesh(
-  new THREE.CircleGeometry(BOUNDS.x * 2.4, 64),
+  new THREE.CircleGeometry(BOUNDS.x * 6, 64),
   sandMat
 );
 sand.rotation.x = -Math.PI / 2;
