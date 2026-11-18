@@ -1123,11 +1123,14 @@ fishType.addEventListener("change", e => {
 let predator = null;
 const attackStatus = document.getElementById("attackStatus");
 const HUNT_LABEL = {
-  approach: "接近中",
+  approach: "追跡中",
   strike: "突進",
   recover: "旋回中",
   leave: "離脱中",
 };
+const MAX_HUNT_PASSES = 5;
+const MAX_HUNT_TICKS = 1080;
+const PREY_MEMORY_TICKS = 100;
 
 function buildSharkGeometry() {
   const shape = { body: [0.55, 0.64, 2.24], back: 0x405763, flank: 0x80979c, belly: 0xdce8df };
@@ -1191,13 +1194,16 @@ function getSchoolCenter() {
 function setHuntPhase(shark, phase) {
   shark.phase = phase;
   shark.phaseTicks = 0;
-  attackStatus.textContent = "サメ " + HUNT_LABEL[phase];
   if (phase === "strike") shark.passes++;
+  const pass = phase === "strike" ? " " + shark.passes + "回目" : "";
+  attackStatus.textContent = "サメ " + HUNT_LABEL[phase] + pass;
   if (phase === "recover" || phase === "leave") {
     const { x, z } = shark.heading;
-    const turn = phase === "recover" ? shark.turnSide * 0.48 : 0;
+    const side = x * (shark.lastSeen.z - shark.pos.z) - z * (shark.lastSeen.x - shark.pos.x);
+    const towardPrey = shark.target && Math.abs(side) > 1.5 ? Math.sign(side) : shark.turnSide;
+    const turn = phase === "recover" ? towardPrey * 0.63 : 0;
     shark.course.set(x - z * turn, 0.12, z + x * turn).normalize();
-    shark.target = null;
+    if (phase === "leave") shark.target = null;
   }
 }
 
@@ -1220,6 +1226,7 @@ function spawnPredator(mode) {
   predator = {
     mode, pos, heading, vel: heading.clone().multiplyScalar(speed), course: heading.clone(),
     age: 0, phaseTicks: 0, passes: 0, target: null, stroke: 0, bank: 0,
+    lastSeen: center.clone(), lastSeenVelocity: new THREE.Vector3(), missedTicks: 0,
     turnSide: Math.random() < 0.5 ? -1 : 1,
   };
   attackStatus.hidden = mode !== "abm";
@@ -1252,46 +1259,71 @@ function choosePrey(shark) {
   return target;
 }
 
-// 追跡は短い突進に区切り、一度通り過ぎてから向きを変える。
+// 旋回中に視界を外れた魚も、最後に見えた位置と速さを短時間だけ覚えておく。
+function trackPrey(shark) {
+  if (shark.target && !boids.includes(shark.target)) shark.target = null;
+  if (!shark.target && shark.phase === "approach" && shark.phaseTicks % 8 === 1) {
+    shark.target = choosePrey(shark);
+  }
+  if (!shark.target) return false;
+  if (sightedPrey(shark, shark.target) === Infinity) {
+    if (++shark.missedTicks > PREY_MEMORY_TICKS) shark.target = null;
+    return false;
+  }
+  shark.missedTicks = 0;
+  shark.lastSeen.copy(shark.target.pos);
+  shark.lastSeenVelocity.copy(shark.target.vel);
+  return true;
+}
+
+function aimAtPrey(shark, speed, leadLimit) {
+  const distance = shark.pos.distanceTo(shark.lastSeen);
+  const lead = Math.min(leadLimit, distance / speed + shark.missedTicks);
+  predatorAim.copy(shark.lastSeen).addScaledVector(shark.lastSeenVelocity, lead).sub(shark.pos).normalize();
+  return distance;
+}
+
 function steerHuntingShark(shark) {
   shark.age++;
   shark.phaseTicks++;
   const cruise = Math.max(0.82, params.maxSpeed * 1.13);
   const burst = Math.max(2.08, params.maxSpeed * 1.75);
-  const recoveryTicks = Math.max(24, Math.round(43 / Math.sqrt(Math.max(1, cruise))));
-  if (shark.age > 560 && shark.phase !== "leave") setHuntPhase(shark, "leave");
+  const recoveryTicks = Math.max(17, Math.round(30 / Math.sqrt(Math.max(1, cruise))));
+  if (shark.age > MAX_HUNT_TICKS && shark.phase !== "leave") setHuntPhase(shark, "leave");
+  const visible = shark.phase !== "leave" && trackPrey(shark);
 
   if (shark.phase === "approach") {
-    if (shark.target && (!boids.includes(shark.target) || sightedPrey(shark, shark.target) === Infinity)) {
-      shark.target = null;
-    }
-    if (!shark.target && shark.phaseTicks % 8 === 1) shark.target = choosePrey(shark);
     if (shark.target) {
-      const distance = shark.pos.distanceTo(shark.target.pos);
-      const lead = Math.min(22, distance / burst);
-      predatorAim.copy(shark.target.pos).addScaledVector(shark.target.vel, lead).sub(shark.pos).normalize();
+      const distance = aimAtPrey(shark, burst, 23);
       shark.course.copy(predatorAim);
-      if (distance < 23 + cruise * 4 && shark.heading.dot(predatorAim) > 0.83 && shark.phaseTicks > 10) {
+      if (visible && distance < 23 + cruise * 4 && shark.heading.dot(predatorAim) > 0.81 && shark.phaseTicks > 8) {
         setHuntPhase(shark, "strike");
       }
     } else {
       shark.course.copy(getSchoolCenter()).sub(shark.pos).normalize();
     }
   } else if (shark.phase === "strike") {
-    // 突進中は魚をすぐに選び直さず、途中で急反転もしない。
-    const target = shark.target;
-    const passed = target && boids.includes(target)
-      && preyOffset.subVectors(target.pos, shark.pos).dot(shark.heading) <= 4.4;
-    if (shark.phaseTicks > 38 || (passed && shark.phaseTicks > 10)) {
+    // 前方で獲物がかわしたときは、急反転せずに突進の進路を少し修正する。
+    if (visible) {
+      aimAtPrey(shark, burst, 12);
+      if (shark.heading.dot(predatorAim) > 0.48) shark.course.lerp(predatorAim, 0.12).normalize();
+    }
+    const passed = shark.target && preyOffset.subVectors(shark.lastSeen, shark.pos).dot(shark.heading) < -1.2;
+    if (shark.phaseTicks > 48 || (passed && shark.phaseTicks > 13)) {
       setHuntPhase(shark, "recover");
     }
-  } else if (shark.phase === "recover" && shark.phaseTicks >= recoveryTicks) {
-    setHuntPhase(shark, shark.passes < 2 ? "approach" : "leave");
+  } else if (shark.phase === "recover") {
+    if (shark.phaseTicks >= recoveryTicks) {
+      setHuntPhase(shark, shark.passes < MAX_HUNT_PASSES ? "approach" : "leave");
+    } else if (shark.target && shark.phaseTicks > 10 && shark.passes < MAX_HUNT_PASSES) {
+      aimAtPrey(shark, cruise, 22);
+      shark.course.lerp(predatorAim, 0.14).normalize();
+    }
   }
 
   const recovering = shark.phase === "recover";
   const desiredSpeed = shark.phase === "strike" ? burst : cruise * (recovering ? 0.72 : 1);
-  const force = shark.phase === "strike" || recovering ? 0.115 : 0.055;
+  const force = shark.phase === "strike" || recovering ? 0.115 : 0.073;
   predatorSteer.copy(shark.course).multiplyScalar(desiredSpeed).sub(shark.vel).clampLength(0, force);
   shark.vel.add(predatorSteer);
 }
