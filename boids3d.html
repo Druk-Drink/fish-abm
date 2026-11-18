@@ -1207,6 +1207,10 @@ function setHuntPhase(shark, phase) {
   }
 }
 
+function sharkCruiseSpeed() {
+  return 0.30 + params.maxSpeed * 0.5;
+}
+
 function spawnPredator(mode) {
   if (mode === "simple") {
     for (const fish of boids) fish.alarm = 0;
@@ -1221,7 +1225,7 @@ function spawnPredator(mode) {
   if (mode === "abm") {
     pos.y = THREE.MathUtils.clamp(center.y - 8, FLOOR_Y + 12, BOUNDS.y - 6);
   }
-  const speed = mode === "simple" ? Math.max(1, params.maxSpeed * 3) : Math.max(0.82, params.maxSpeed * 1.13);
+  const speed = mode === "simple" ? Math.max(0.65, params.maxSpeed * 1.55) : sharkCruiseSpeed();
   const heading = center.clone().sub(pos).normalize();
   predator = {
     mode, pos, heading, vel: heading.clone().multiplyScalar(speed), course: heading.clone(),
@@ -1286,8 +1290,8 @@ function aimAtPrey(shark, speed, leadLimit) {
 function steerHuntingShark(shark) {
   shark.age++;
   shark.phaseTicks++;
-  const cruise = Math.max(0.82, params.maxSpeed * 1.13);
-  const burst = Math.max(2.08, params.maxSpeed * 1.75);
+  const cruise = sharkCruiseSpeed();
+  const burst = 0.48 + params.maxSpeed;
   const recoveryTicks = Math.max(17, Math.round(30 / Math.sqrt(Math.max(1, cruise))));
   if (shark.age > MAX_HUNT_TICKS && shark.phase !== "leave") setHuntPhase(shark, "leave");
   const visible = shark.phase !== "leave" && trackPrey(shark);
@@ -1296,7 +1300,7 @@ function steerHuntingShark(shark) {
     if (shark.target) {
       const distance = aimAtPrey(shark, burst, 23);
       shark.course.copy(predatorAim);
-      if (visible && distance < 23 + cruise * 4 && shark.heading.dot(predatorAim) > 0.81 && shark.phaseTicks > 8) {
+      if (visible && distance < 18 + burst * 6 && shark.heading.dot(predatorAim) > 0.81 && shark.phaseTicks > 8) {
         setHuntPhase(shark, "strike");
       }
     } else {
@@ -1309,7 +1313,7 @@ function steerHuntingShark(shark) {
       if (shark.heading.dot(predatorAim) > 0.48) shark.course.lerp(predatorAim, 0.12).normalize();
     }
     const passed = shark.target && preyOffset.subVectors(shark.lastSeen, shark.pos).dot(shark.heading) < -1.2;
-    if (shark.phaseTicks > 48 || (passed && shark.phaseTicks > 13)) {
+    if (shark.phaseTicks > 55 || (passed && shark.phaseTicks > 13)) {
       setHuntPhase(shark, "recover");
     }
   } else if (shark.phase === "recover") {
@@ -1323,7 +1327,7 @@ function steerHuntingShark(shark) {
 
   const recovering = shark.phase === "recover";
   const desiredSpeed = shark.phase === "strike" ? burst : cruise * (recovering ? 0.72 : 1);
-  const force = shark.phase === "strike" || recovering ? 0.115 : 0.073;
+  const force = shark.phase === "strike" || recovering ? 0.065 : 0.04;
   predatorSteer.copy(shark.course).multiplyScalar(desiredSpeed).sub(shark.vel).clampLength(0, force);
   shark.vel.add(predatorSteer);
 }
@@ -1631,7 +1635,8 @@ function draw(deltaTime) {
     _lookMat.lookAt(_lookTarget, predator.pos, _up);
     _bank.setFromAxisAngle(_forward, predator.bank);
     predatorMesh.quaternion.setFromRotationMatrix(_lookMat).multiply(_bank);
-    const strokes = predator.phase === "strike" ? 2.7 : 1.25;
+    const speed = predator.vel.length();
+    const strokes = 0.72 + 1.15 * speed / (speed + 0.48) + (predator.phase === "strike" ? 0.28 : 0);
     predator.stroke = (predator.stroke + deltaTime * strokes * Math.PI * 2) % (Math.PI * 2);
     sharkStroke.value = predator.stroke;
   }
