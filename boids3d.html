@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Boids 3D シミュレーション</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -39,6 +39,69 @@
     color-scheme: dark;
   }
   #hint { margin-top: 10px; font-size: 11px; color: #a6c5c2; line-height: 1.5; }
+  #panelToggle, .touch-hint { display: none; }
+
+  @media (max-width: 640px), (pointer: coarse) and (max-height: 570px) {
+    #panel {
+      top: auto;
+      bottom: max(10px, env(safe-area-inset-bottom));
+      left: max(10px, env(safe-area-inset-left));
+      right: max(10px, env(safe-area-inset-right));
+      display: flex;
+      flex-direction: column;
+      width: auto;
+      max-height: 56vh;
+      max-height: 56dvh;
+      padding: 0;
+      overflow: hidden;
+    }
+    .panel-header {
+      display: flex;
+      flex: none;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px 6px 14px;
+    }
+    #panel h1 { margin: 0; }
+    #panelToggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 44px;
+      width: auto;
+      margin: 0;
+      padding: 0 12px;
+      font-weight: 600;
+    }
+    #panelToggle::after {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-top: 2px solid currentColor;
+      border-right: 2px solid currentColor;
+      transform: translateY(2px) rotate(-45deg);
+    }
+    #panelToggle[aria-expanded="true"]::after {
+      transform: translateY(-2px) rotate(135deg);
+    }
+    #panelContent {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior-y: contain;
+      padding: 8px 14px 14px;
+      border-top: 1px solid var(--panel-border);
+    }
+    #panel:not(.expanded) #panelContent { display: none; }
+    #panelContent .rule-head { min-height: 34px; gap: 10px; }
+    #panelContent .rule-head input { width: 18px; height: 18px; flex: none; }
+    #panelContent .rule-head label { flex: 1; line-height: 1.4; padding-block: 7px; }
+    #panelContent input[type=range] { display: block; min-height: 30px; }
+    #panelContent :is(select, button) { min-height: 44px; }
+    .desktop-hint { display: none; }
+    .touch-hint { display: inline; }
+  }
 </style>
 <script type="importmap">
 {
@@ -51,84 +114,99 @@
 </head>
 <body>
 
-<div id="panel">
-  <h1>Boids 3D</h1>
-
-  <div class="rule">
-    <div class="rule-head">
-      <input type="checkbox" id="alignOn" checked>
-      <label for="alignOn">群れと同じ方向に泳ごう</label>
+<aside id="panel" aria-label="Boids 3D の設定">
+  <div class="panel-header">
+    <h1>Boids 3D</h1>
+    <button type="button" id="panelToggle" aria-expanded="false" aria-controls="panelContent">パラメータ</button>
+  </div>
+  <div id="panelContent">
+    <div class="rule">
+      <div class="rule-head">
+        <input type="checkbox" id="alignOn" checked>
+        <label for="alignOn">群れと同じ方向に泳ごう</label>
+      </div>
+      <input type="range" id="alignW" min="0" max="3" step="0.1" value="1.0">
     </div>
-    <input type="range" id="alignW" min="0" max="3" step="0.1" value="1.0">
-  </div>
 
-  <div class="rule">
-    <div class="rule-head">
-      <input type="checkbox" id="cohesionOn" checked>
-      <label for="cohesionOn">群れの中心に集まろう</label>
+    <div class="rule">
+      <div class="rule-head">
+        <input type="checkbox" id="cohesionOn" checked>
+        <label for="cohesionOn">群れの中心に集まろう</label>
+      </div>
+      <input type="range" id="cohesionW" min="0" max="3" step="0.1" value="0.8">
     </div>
-    <input type="range" id="cohesionW" min="0" max="3" step="0.1" value="0.8">
-  </div>
 
-  <div class="rule">
-    <div class="rule-head">
-      <input type="checkbox" id="separationOn" checked>
-      <label for="separationOn">他の魚と衝突しないように</label>
+    <div class="rule">
+      <div class="rule-head">
+        <input type="checkbox" id="separationOn" checked>
+        <label for="separationOn">他の魚と衝突しないように</label>
+      </div>
+      <input type="range" id="separationW" min="0" max="3" step="0.1" value="1.5">
     </div>
-    <input type="range" id="separationW" min="0" max="3" step="0.1" value="1.5">
+
+    <div class="row" style="margin-top: 12px;"><span>近傍の定義（整列・結合）</span></div>
+    <div class="rule-head">
+      <input type="radio" name="mode" id="modeMetric" checked>
+      <label for="modeMetric">距離で見る（半径R以内の全員）</label>
+    </div>
+    <div class="rule-head">
+      <input type="radio" name="mode" id="modeTopo">
+      <label for="modeTopo">数で見る（近い順にk匹）</label>
+    </div>
+    <div class="row"><span>k（見る数）</span><span class="val" id="kVal">7</span></div>
+    <input type="range" id="kNeighbors" min="1" max="15" step="1" value="7">
+
+    <div class="row"><span>個体数</span><span class="val" id="countVal">100</span></div>
+    <input type="range" id="count" min="10" max="500" step="10" value="100">
+
+    <div class="row"><span>視界半径</span><span class="val" id="perceptionVal">14</span></div>
+    <input type="range" id="perception" min="5" max="30" step="1" value="14">
+
+    <div class="row"><span>最高速度</span><span class="val" id="speedVal">0.2</span></div>
+    <input type="range" id="speed" min="0.2" max="4" step="0.1" value="0.2">
+
+    <div class="row"><span>整列度 φ</span><span class="val" id="phiVal">–</span></div>
+
+    <div class="row" style="margin-top: 12px;"><span>魚の種類</span></div>
+    <select id="fishType">
+      <option value="default" selected>標準</option>
+      <option value="aji">アジ風（銀色）</option>
+      <option value="kumanomi">クマノミ風（オレンジ）</option>
+    </select>
+
+    <div class="row" style="margin-top: 12px;"><span>水流</span></div>
+    <select id="flowType">
+      <option value="none" selected>なし</option>
+      <option value="current">海流（一定方向）</option>
+      <option value="vortex">渦（中心軸まわり）</option>
+      <option value="turbulence">乱流（ゆらぎ）</option>
+    </select>
+    <div class="row"><span>流速</span><span class="val" id="flowVal">0.1</span></div>
+    <input type="range" id="flowStrength" min="0" max="0.5" step="0.02" value="0.1">
+
+    <button id="attackSimple">捕食者アタック（シンプル版）</button>
+    <button id="attackAbm">捕食者アタック（ABM版）</button>
+    <button id="addObstacle">障害物を追加</button>
+    <button id="clearObstacles">障害物をクリア</button>
+    <div id="hint">
+      <span class="desktop-hint">ドラッグ：視点回転<br>ホイール：ズーム<br>右ドラッグ：平行移動</span>
+      <span class="touch-hint">1本指で回転・ピンチでズーム・2本指で移動</span>
+      <br>分離（衝突回避）は常に半径Rベース
+    </div>
   </div>
-
-  <div class="row" style="margin-top: 12px;"><span>近傍の定義（整列・結合）</span></div>
-  <div class="rule-head">
-    <input type="radio" name="mode" id="modeMetric" checked>
-    <label for="modeMetric">距離で見る（半径R以内の全員）</label>
-  </div>
-  <div class="rule-head">
-    <input type="radio" name="mode" id="modeTopo">
-    <label for="modeTopo">数で見る（近い順にk匹）</label>
-  </div>
-  <div class="row"><span>k（見る数）</span><span class="val" id="kVal">7</span></div>
-  <input type="range" id="kNeighbors" min="1" max="15" step="1" value="7">
-
-  <div class="row"><span>個体数</span><span class="val" id="countVal">100</span></div>
-  <input type="range" id="count" min="10" max="500" step="10" value="100">
-
-  <div class="row"><span>視界半径</span><span class="val" id="perceptionVal">14</span></div>
-  <input type="range" id="perception" min="5" max="30" step="1" value="14">
-
-  <div class="row"><span>最高速度</span><span class="val" id="speedVal">0.2</span></div>
-  <input type="range" id="speed" min="0.2" max="4" step="0.1" value="0.2">
-
-  <div class="row"><span>整列度 φ</span><span class="val" id="phiVal">–</span></div>
-
-  <div class="row" style="margin-top: 12px;"><span>魚の種類</span></div>
-  <select id="fishType">
-    <option value="default" selected>標準</option>
-    <option value="aji">アジ風（銀色）</option>
-    <option value="kumanomi">クマノミ風（オレンジ）</option>
-  </select>
-
-  <div class="row" style="margin-top: 12px;"><span>水流</span></div>
-  <select id="flowType">
-    <option value="none" selected>なし</option>
-    <option value="current">海流（一定方向）</option>
-    <option value="vortex">渦（中心軸まわり）</option>
-    <option value="turbulence">乱流（ゆらぎ）</option>
-  </select>
-  <div class="row"><span>流速</span><span class="val" id="flowVal">0.1</span></div>
-  <input type="range" id="flowStrength" min="0" max="0.5" step="0.02" value="0.1">
-
-  <button id="attackSimple">捕食者アタック（シンプル版）</button>
-  <button id="attackAbm">捕食者アタック（ABM版）</button>
-  <button id="addObstacle">障害物を追加</button>
-  <button id="clearObstacles">障害物をクリア</button>
-  <div id="hint">ドラッグ：視点回転<br>ホイール：ズーム<br>右ドラッグ：平行移動<br>分離（衝突回避）は常に半径Rベース</div>
-</div>
+</aside>
 
 <script type="module">
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+
+const panel = document.getElementById("panel");
+const panelToggle = document.getElementById("panelToggle");
+panelToggle.addEventListener("click", () => {
+  const expanded = panel.classList.toggle("expanded");
+  panelToggle.setAttribute("aria-expanded", String(expanded));
+});
 
 // ---- シーン ----
 const scene = new THREE.Scene();
