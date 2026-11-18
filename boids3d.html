@@ -148,14 +148,12 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, -9, 0);
 
-scene.add(new THREE.HemisphereLight(0xc8f6f2, 0x53777a, 1.2));
-const sunDirection = new THREE.Vector3(-0.78, 0.48, -0.56).normalize();
-const dirLight = new THREE.DirectionalLight(0xfff4d7, 1.7);
-dirLight.position.copy(sunDirection).multiplyScalar(100);
+scene.add(new THREE.HemisphereLight(0xc8f6f2, 0x53777a, 1.45));
+const dirLight = new THREE.DirectionalLight(0xe6f9f2, 1.2);
+dirLight.position.set(-78, 48, -56);
 scene.add(dirLight);
 
-// 海の色と光をワールド座標の方向から求め、視点回転に追従させる。
-const habitatTime = { value: 0 };
+// 見上げるほど浅瀬の色に近づく。
 const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthTest: false,
@@ -163,9 +161,6 @@ const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.S
   uniforms: {
     deepWater: { value: deepWater },
     shallowWater: { value: new THREE.Color(0x40a9a4) },
-    sunlight: { value: new THREE.Color(0xc4fff1) },
-    sunDirection: { value: sunDirection },
-    habitatTime,
   },
   vertexShader: `
     varying vec3 waterDirection;
@@ -179,32 +174,11 @@ const waterBackdrop = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.S
     varying vec3 waterDirection;
     uniform vec3 deepWater;
     uniform vec3 shallowWater;
-    uniform vec3 sunlight;
-    uniform vec3 sunDirection;
-    uniform float habitatTime;
 
     void main() {
       vec3 direction = normalize(waterDirection);
-      float surface = smoothstep(-0.19, 0.46, direction.y);
-      vec3 color = mix(deepWater, shallowWater, surface);
-      float towardSun = max(0.0, dot(direction, sunDirection));
-      float glow = pow(towardSun, 8.0) * smoothstep(-0.24, 0.42, direction.y);
-      color += sunlight * glow * 0.46;
-
-      vec3 right = normalize(cross(sunDirection, vec3(0.0, 1.0, 0.0)));
-      vec3 up = cross(right, sunDirection);
-      float drop = max(0.0, -dot(direction, up));
-      float fan = dot(direction, right) / (0.12 + 0.82 * drop);
-      float time = habitatTime * 0.28;
-      float ripples = sin(29.0 * fan + time + 0.7 * sin(9.0 * fan - time * 0.6));
-      float shafts = smoothstep(0.24, 1.0, ripples);
-      float spread = 1.0 - smoothstep(0.12, 0.68, abs(fan));
-      float fade = smoothstep(0.0, 0.11, drop) * (1.0 - smoothstep(0.27, 0.68, drop));
-      fade *= smoothstep(-0.19, 0.10, direction.y);
-      float strength = shafts * spread * fade * smoothstep(0.62, 0.95, towardSun);
-      color += sunlight * strength * 0.18;
-
-      gl_FragColor = vec4(color, 1.0);
+      float surface = smoothstep(-0.19, 0.38, direction.y);
+      gl_FragColor = vec4(mix(deepWater, shallowWater, surface), 1.0);
       #include <colorspace_fragment>
     }
   `,
@@ -238,14 +212,12 @@ scene.add(walls);
 // ---- 海底の景観 ----
 const sandMat = new THREE.MeshStandardMaterial({ color: 0xc6b38a, roughness: 1 });
 sandMat.onBeforeCompile = shader => {
-  shader.uniforms.habitatTime = habitatTime;
   shader.vertexShader = "varying vec2 sandPosition;\n" + shader.vertexShader.replace(
     "#include <begin_vertex>",
     "#include <begin_vertex>\nsandPosition = (modelMatrix * vec4(position, 1.0)).xz;"
   );
   shader.fragmentShader = `
     varying vec2 sandPosition;
-    uniform float habitatTime;
     float grain(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
     }
@@ -257,18 +229,6 @@ sandMat.onBeforeCompile = shader => {
     float speckle = grain(floor(q * 8.0)) - 0.5;
     float patches = sin(q.x * 0.10 - q.y * 0.14) * cos(q.x * 0.07 + q.y * 0.25);
     diffuseColor.rgb *= 0.92 + 0.12 * patches + (0.085 * ripple + 0.18 * speckle) * fineDetail;
-
-    // 水面で屈折した光が砂に作る模様
-    vec2 p = q * 0.22;
-    float t = habitatTime * 0.48;
-    vec2 distortion = 1.05 * sin(vec2(p.y * 0.61 + p.x * 0.36 + t, p.x * 0.72 - p.y * 0.31 - t));
-    float waveA = abs(sin(p.x + p.y * 0.18 + distortion.x + 0.55 * sin(p.y + t)));
-    float waveB = abs(sin(p.y - p.x * 0.32 + distortion.y + 0.57 * sin(p.x - t * 0.8)));
-    float light = 1.0 - smoothstep(0.015, 0.18, min(waveA, waveB));
-    float dapple = 0.30 + 0.30 * cos(p.x * 0.4 + p.y * 0.21 + t)
-      * sin(p.y * 0.66 - p.x * 0.25 - t * 0.7);
-    float causticsDetail = 1.0 - smoothstep(0.22, 0.76, length(fwidth(p)));
-    diffuseColor.rgb += vec3(0.14, 0.19, 0.15) * light * dapple * causticsDetail;
   `);
 };
 const sand = new THREE.Mesh(
@@ -447,6 +407,7 @@ function createKelpGeometry() {
   return geometry;
 }
 
+const habitatTime = { value: 0 };
 const kelpMat = new THREE.MeshStandardMaterial({
   vertexColors: true, side: THREE.DoubleSide, roughness: 0.72,
   emissive: 0x30441b, emissiveIntensity: 0.17
