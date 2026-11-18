@@ -1129,7 +1129,7 @@ const HUNT_LABEL = {
   leave: "離脱中",
 };
 const MAX_HUNT_PASSES = 5;
-const MAX_HUNT_TICKS = 1680;
+const MAX_HUNT_TICKS = 1920;
 const PREY_MEMORY_TICKS = 100;
 
 function buildSharkGeometry() {
@@ -1164,15 +1164,17 @@ function buildSharkGeometry() {
 }
 
 const sharkStroke = { value: 0 };
+const sharkBend = { value: 0 };
 const predMat = new THREE.MeshStandardMaterial({
   vertexColors: true, side: THREE.DoubleSide, roughness: 0.53,
 });
 predMat.onBeforeCompile = shader => {
   shader.uniforms.sharkStroke = sharkStroke;
-  shader.vertexShader = "uniform float sharkStroke;\n" + shader.vertexShader.replace("#include <begin_vertex>", `
+  shader.uniforms.sharkBend = sharkBend;
+  shader.vertexShader = "uniform float sharkStroke;\nuniform float sharkBend;\n" + shader.vertexShader.replace("#include <begin_vertex>", `
     #include <begin_vertex>
     float tail = max(0.0, -position.z - 0.25);
-    transformed.x += tail * tail * 0.044 * sin(sharkStroke + position.z * 1.37);
+    transformed.x += tail * tail * (0.044 * sin(sharkStroke + position.z * 1.37) + 0.10 * sharkBend);
   `);
 };
 const predatorMesh = new THREE.Mesh(buildSharkGeometry(), predMat);
@@ -1181,7 +1183,8 @@ predatorMesh.visible = false;
 scene.add(predatorMesh);
 
 const predatorAim = new THREE.Vector3();
-const predatorSteer = new THREE.Vector3();
+const sharkTurnAxis = new THREE.Vector3();
+const sharkDesiredHeading = new THREE.Vector3();
 const preyOffset = new THREE.Vector3();
 const schoolCenter = new THREE.Vector3();
 
@@ -1201,8 +1204,9 @@ function setHuntPhase(shark, phase) {
     const { x, z } = shark.heading;
     const side = x * (shark.lastSeen.z - shark.pos.z) - z * (shark.lastSeen.x - shark.pos.x);
     const towardPrey = shark.target && Math.abs(side) > 1.5 ? Math.sign(side) : shark.turnSide;
-    const turn = phase === "recover" ? towardPrey * 0.63 : 0;
-    shark.course.set(x - z * turn, 0.12, z + x * turn).normalize();
+    if (phase === "recover") shark.turnSide = towardPrey;
+    const turn = phase === "recover" ? shark.turnSide * 0.78 : 0;
+    shark.course.set(x - z * turn, phase === "recover" ? 0.04 : 0.10, z + x * turn).normalize();
     if (phase === "leave") shark.target = null;
   }
 }
@@ -1241,6 +1245,8 @@ function spawnPredator(mode) {
   attackStatus.textContent = "";
   if (mode === "abm") setHuntPhase(predator, "approach");
   predMat.color.set(mode === "abm" ? 0xffffff : 0xff7777);
+  predatorMesh.position.copy(pos);
+  predatorMesh.lookAt(center);
   predatorMesh.visible = true;
 }
 document.getElementById("attackSimple").addEventListener("click", () => spawnPredator("simple"));
@@ -1291,13 +1297,42 @@ function aimAtPrey(shark, speed, leadLimit) {
   return distance;
 }
 
+function steerSharkCourse(shark, desiredSpeed, burst) {
+  const striking = shark.phase === "strike";
+  const currentSpeed = Math.min(shark.vel.length(), burst);
+  const acceleration = params.maxSpeed * (striking ? 0.061 : 0.037);
+  const speed = currentSpeed + THREE.MathUtils.clamp(desiredSpeed - currentSpeed, -acceleration, acceleration);
+  shark.vel.copy(shark.heading);
+  if (shark.course.lengthSq() > 0) {
+    sharkDesiredHeading.copy(shark.course);
+    const pitchLimit = Math.hypot(shark.course.x, shark.course.z) * 0.63;
+    if (pitchLimit > 0) {
+      sharkDesiredHeading.y = THREE.MathUtils.clamp(shark.course.y, -pitchLimit, pitchLimit);
+    }
+    sharkDesiredHeading.normalize();
+    const angle = shark.heading.angleTo(sharkDesiredHeading);
+    sharkTurnAxis.crossVectors(shark.heading, sharkDesiredHeading);
+    if (angle > Math.PI - 0.08) {
+      // 真後ろを狙うときも、旋回の途中で左右を切り替えない。
+      sharkTurnAxis.set(0, -shark.turnSide, 0);
+      sharkTurnAxis.addScaledVector(shark.heading, -sharkTurnAxis.dot(shark.heading));
+    }
+    if (sharkTurnAxis.lengthSq() > 1e-8) {
+      const turnRadius = striking ? 11.5 : shark.phase === "recover" ? 5.8 : 6.6;
+      const step = Math.min(angle, 0.055, speed / turnRadius);
+      shark.vel.applyAxisAngle(sharkTurnAxis.normalize(), step);
+    }
+  }
+  shark.vel.multiplyScalar(speed);
+}
+
 function steerHuntingShark(shark) {
   shark.age++;
   shark.phaseTicks++;
   const fishSpeed = params.maxSpeed;
   const cruise = sharkCruiseSpeed();
   const burst = fishSpeed * 1.1;
-  const recoveryTicks = Math.max(20, Math.round(10 / cruise));
+  const recoveryTicks = Math.max(25, Math.round(11.5 / cruise));
   const strikeTicks = Math.max(36, Math.round(26 / burst));
   if (shark.age > MAX_HUNT_TICKS && shark.phase !== "leave") setHuntPhase(shark, "leave");
   const visible = shark.phase !== "leave" && trackPrey(shark);
@@ -1332,12 +1367,10 @@ function steerHuntingShark(shark) {
   }
 
   const recovering = shark.phase === "recover";
-  let desiredSpeed = recovering ? cruise * 0.72 : cruise;
+  let desiredSpeed = recovering ? cruise * 0.86 : cruise;
   if (shark.phase === "approach" && shark.target) desiredSpeed = fishSpeed;
   if (shark.phase === "strike") desiredSpeed = burst;
-  const force = fishSpeed * (shark.phase === "strike" || recovering ? 0.16 : 0.10);
-  predatorSteer.copy(shark.course).multiplyScalar(desiredSpeed).sub(shark.vel).clampLength(0, force);
-  shark.vel.add(predatorSteer).clampLength(0, burst);
+  steerSharkCourse(shark, desiredSpeed, burst);
 }
 
 function updatePredator() {
@@ -1355,7 +1388,7 @@ function updatePredator() {
   if (shark.vel.lengthSq() > 0) {
     predatorAim.copy(shark.vel).normalize();
     const turn = shark.heading.z * predatorAim.x - shark.heading.x * predatorAim.z;
-    shark.bank = THREE.MathUtils.lerp(shark.bank, THREE.MathUtils.clamp(-turn * 8, -0.52, 0.52), 0.23);
+    shark.bank = THREE.MathUtils.lerp(shark.bank, THREE.MathUtils.clamp(-turn * 7, -0.38, 0.38), 0.14);
     shark.heading.copy(predatorAim);
   }
   const outside = Math.abs(shark.pos.x) > BOUNDS.x + 60
@@ -1645,11 +1678,13 @@ function draw(deltaTime) {
     _lookTarget.copy(predator.pos).add(predator.heading);
     _lookMat.lookAt(_lookTarget, predator.pos, _up);
     _bank.setFromAxisAngle(_forward, predator.bank);
-    predatorMesh.quaternion.setFromRotationMatrix(_lookMat).multiply(_bank);
+    _quat.setFromRotationMatrix(_lookMat).multiply(_bank);
+    predatorMesh.quaternion.slerp(_quat, 1 - Math.exp(-19 * deltaTime));
     const speed = predator.vel.length();
     const strokes = 0.72 + 1.15 * speed / (speed + 0.48) + (predator.phase === "strike" ? 0.28 : 0);
     predator.stroke = (predator.stroke + deltaTime * strokes * Math.PI * 2) % (Math.PI * 2);
     sharkStroke.value = predator.stroke;
+    sharkBend.value = predator.bank;
   }
 }
 
