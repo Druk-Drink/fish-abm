@@ -1125,7 +1125,7 @@ const attackStatus = document.getElementById("attackStatus");
 const HUNT_LABEL = {
   approach: "追跡中",
   strike: "突進",
-  recover: "旋回中",
+  recover: "回り込み中",
   leave: "離脱中",
 };
 const MAX_HUNT_PASSES = 5;
@@ -1202,12 +1202,13 @@ function setHuntPhase(shark, phase) {
   attackStatus.textContent = "サメ " + HUNT_LABEL[phase] + pass;
   if (phase === "recover" || phase === "leave") {
     const { x, z } = shark.heading;
-    const side = x * (shark.lastSeen.z - shark.pos.z) - z * (shark.lastSeen.x - shark.pos.x);
-    const towardPrey = shark.target && Math.abs(side) > 1.5 ? Math.sign(side) : shark.turnSide;
-    if (phase === "recover") shark.turnSide = towardPrey;
-    const turn = phase === "recover" ? shark.turnSide * 0.78 : 0;
+    const center = getSchoolCenter();
+    const side = x * (center.z - shark.pos.z) - z * (center.x - shark.pos.x);
+    if (phase === "recover" && Math.abs(side) > 1.5) shark.turnSide = Math.sign(side);
+    const turn = phase === "recover" ? shark.turnSide * 0.37 : 0;
     shark.course.set(x - z * turn, phase === "recover" ? 0.04 : 0.10, z + x * turn).normalize();
-    if (phase === "leave") shark.target = null;
+    if (shark.target) shark.passedPrey.add(shark.target);
+    shark.target = null;
   }
 }
 
@@ -1239,6 +1240,7 @@ function spawnPredator(mode) {
     mode, pos, heading, vel: heading.clone().multiplyScalar(speed), course: heading.clone(),
     age: 0, phaseTicks: 0, passes: 0, target: null, stroke: 0, bank: 0,
     lastSeen: center.clone(), lastSeenVelocity: new THREE.Vector3(), missedTicks: 0,
+    passedPrey: new Set(), bestGap: Infinity, targetTick: 0, progressTick: 0,
     turnSide: Math.random() < 0.5 ? -1 : 1,
   };
   attackStatus.hidden = mode !== "abm";
@@ -1264,6 +1266,7 @@ function choosePrey(shark) {
   let target = null;
   let best = Infinity;
   for (const fish of boids) {
+    if (shark.passedPrey.has(fish)) continue;
     const score = sightedPrey(shark, fish);
     if (score < best) {
       best = score;
@@ -1273,21 +1276,43 @@ function choosePrey(shark) {
   return target;
 }
 
-// 旋回中に視界を外れた魚も、最後に見えた位置と速さを短時間だけ覚えておく。
+// 一度の追跡中は最後に見えた位置を使い、距離が縮まらなければ別の魚を探す。
 function trackPrey(shark) {
-  if (shark.target && !boids.includes(shark.target)) shark.target = null;
-  if (!shark.target && shark.phase === "approach" && shark.phaseTicks % 8 === 1) {
-    shark.target = choosePrey(shark);
-  }
-  if (!shark.target) return false;
-  if (sightedPrey(shark, shark.target) === Infinity) {
-    if (++shark.missedTicks > PREY_MEMORY_TICKS) shark.target = null;
+  if (shark.target && !boids.includes(shark.target)) {
+    setHuntPhase(shark, "recover");
     return false;
   }
-  shark.missedTicks = 0;
-  shark.lastSeen.copy(shark.target.pos);
-  shark.lastSeenVelocity.copy(shark.target.vel);
-  return true;
+  if (!shark.target && shark.phase === "approach" && shark.phaseTicks % 8 === 1) {
+    shark.target = choosePrey(shark);
+    shark.bestGap = Infinity;
+    shark.targetTick = shark.age;
+    shark.progressTick = shark.age;
+  }
+  if (!shark.target) return false;
+  const visible = sightedPrey(shark, shark.target) !== Infinity;
+  if (visible) {
+    shark.missedTicks = 0;
+    shark.lastSeen.copy(shark.target.pos);
+    shark.lastSeenVelocity.copy(shark.target.vel);
+  } else if (++shark.missedTicks > PREY_MEMORY_TICKS) {
+    setHuntPhase(shark, "recover");
+    return false;
+  }
+
+  if (shark.phase === "approach") {
+    const gap = shark.pos.distanceTo(shark.lastSeen);
+    if (visible && gap < shark.bestGap - 1.1) {
+      shark.bestGap = gap;
+      shark.progressTick = shark.age;
+    }
+    const patience = Math.max(72, Math.round(39 / params.maxSpeed));
+    const chaseLimit = Math.max(165, Math.round(64 / params.maxSpeed));
+    if (shark.age - shark.progressTick > patience || shark.age - shark.targetTick > chaseLimit) {
+      setHuntPhase(shark, "recover");
+      return false;
+    }
+  }
+  return visible;
 }
 
 function aimAtPrey(shark, speed, leadLimit) {
@@ -1344,6 +1369,8 @@ function steerHuntingShark(shark) {
       if (visible && distance < 16 + burst * 7 && shark.heading.dot(predatorAim) > 0.81 && shark.phaseTicks > 8) {
         setHuntPhase(shark, "strike");
       }
+    } else if (shark.phaseTicks > Math.max(132, Math.round(46 / fishSpeed))) {
+      setHuntPhase(shark, "leave");
     } else {
       shark.course.copy(getSchoolCenter()).sub(shark.pos).normalize();
     }
@@ -1360,9 +1387,6 @@ function steerHuntingShark(shark) {
   } else if (shark.phase === "recover") {
     if (shark.phaseTicks >= recoveryTicks) {
       setHuntPhase(shark, shark.passes < MAX_HUNT_PASSES ? "approach" : "leave");
-    } else if (shark.target && shark.phaseTicks > 10 && shark.passes < MAX_HUNT_PASSES) {
-      aimAtPrey(shark, cruise, 22);
-      shark.course.lerp(predatorAim, 0.14).normalize();
     }
   }
 
